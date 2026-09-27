@@ -41,17 +41,10 @@ async function waitForHealth(port, timeoutMs = 15000) {
 }
 
 async function startLocalService(port) {
-  const resourceRoot = here;
-  const packagedSample = path.join(process.resourcesPath, 'data', 'demo');
-  const localPrivateSample = path.join(here, '..', 'data', 'BlueSky_Crown_Practice');
-  const localPublicSample = path.join(here, '..', 'data', 'demo');
-  const sampleDir = app.isPackaged ? packagedSample : (fs.existsSync(localPrivateSample) ? localPrivateSample : localPublicSample);
   const dataRoot = path.join(app.getPath('userData'), 'data');
   Object.assign(process.env, {
     PORT: String(port),
-    PROCAD_RESOURCE_ROOT: resourceRoot,
     PROCAD_DIST_DIR: path.join(here, 'dist'),
-    PROCAD_SAMPLE_DIR: sampleDir,
     PROCAD_DATA_ROOT: dataRoot
   });
   startupLog(`starting local service in main process packaged=${app.isPackaged}`);

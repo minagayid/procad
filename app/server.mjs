@@ -12,12 +12,7 @@ import { unitToMillimeters } from './src/units.js';
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(appDir, '..');
-const resourceRoot = process.env.PROCAD_RESOURCE_ROOT || projectDir;
 const dataRoot = process.env.PROCAD_DATA_ROOT || path.join(projectDir, 'data');
-const privateSampleDir = path.join(resourceRoot, 'data', 'BlueSky_Crown_Practice');
-const publicSampleDir = path.join(resourceRoot, 'data', 'demo');
-const sampleDir = process.env.PROCAD_SAMPLE_DIR || await fs.access(privateSampleDir).then(() => privateSampleDir).catch(() => publicSampleDir);
-const usesLegacySample = path.basename(sampleDir).toLowerCase() === 'bluesky_crown_practice';
 const userDir = process.env.PROCAD_USER_DIR || path.join(dataRoot, 'user_meshes');
 const stateDir = process.env.PROCAD_STATE_DIR || path.join(dataRoot, 'cases');
 const distDir = process.env.PROCAD_DIST_DIR || path.join(appDir, 'dist');
@@ -125,7 +120,6 @@ function validateGeometry(geometry, { requireClosed = false, unitToMm = 1 } = {}
   }
 }
 
-app.use('/sample', express.static(sampleDir, { fallthrough: false, maxAge: 0 }));
 app.use('/user-meshes', express.static(userDir, { fallthrough: false, maxAge: 0 }));
 app.use(express.json({ limit: '2mb' }));
 app.get('/api/health', (_req, res) => res.json({
@@ -133,7 +127,7 @@ app.get('/api/health', (_req, res) => res.json({
   app: 'procad CAD',
   localOnly: true,
   acceptedInputFormats: ['stl', 'ply', 'obj', 'off', 'xyz', 'pts', 'csv', 'pcd-ascii'],
-  camHandoffFormats: ['stl', 'obj'],
+  reviewHandoffFormats: ['stl', 'obj'],
   directMachineTransmission: false
 }));
 app.get('/api/cases', async (_req, res) => {
@@ -144,48 +138,13 @@ app.get('/api/cases', async (_req, res) => {
     try {
       const value = JSON.parse(await fs.readFile(path.join(stateDir, name), 'utf8'));
       const id = name.slice(0, -5);
-      if (value.schemaVersion === 1 && value.caseId === id && Array.isArray(value.sources)) {
+      if ([1, 2].includes(value.schemaVersion) && value.caseId === id && Array.isArray(value.sources)) {
         cases.push({ id, title: value.caseTitle || 'Saved scan case', savedAt: value.savedAt || null, sourceCount: value.sources.length });
       }
     } catch { /* Ignore incomplete or unsupported local manifests. */ }
   }
   cases.sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
   res.json({ cases });
-});
-const legacyDemoFiles = [
-  { name: 'Pre-op maxilla', role: 'preop', url: '/sample/preop_arch.stl', sha256: '49e3bedabe815832a5f3f94379b9793c359e6166bf82195d879c49cfa5ed2daf', unit: 'mm', unitProvenance: 'BlueSky-linked case geometry report; source coordinates preserved', visible: false, color: '#a8b3bb', opacity: 0.28 },
-  { name: 'Prepared maxilla', role: 'upper', url: '/sample/prep_arch.stl', sha256: '7c661ecc0e72c77db54a6df13f4381d546ab038089e9b9d8a2517cd567e7ce2d', unit: 'mm', unitProvenance: 'BlueSky-linked case geometry report; source coordinates preserved', visible: true, color: '#d7dce0', opacity: 0.62 },
-  { name: 'Opposing mandible', role: 'opposing', url: '/sample/opposing_mandible.stl', sha256: '652b691bf2dba1af6202ef4c56d8703269d5602dfb1913cc64ae00c08a8cc89e', unit: 'mm', unitProvenance: 'BlueSky-linked case geometry report; source coordinates preserved', visible: true, color: '#8ba6b3', opacity: 0.36 },
-  { name: 'Prepared die #3', role: 'prep', url: '/sample/prepared_die.stl', sha256: 'd7271ba75e923e4920721d87813f649be5bfaf8627d7a91724640f89c272179f', unit: 'mm', unitProvenance: 'BlueSky-linked case geometry report; source coordinates preserved', visible: true, color: '#e4a55c', opacity: 1 },
-  { name: 'Vendor reference crown', role: 'reference', url: '/sample/reference_crown.stl', sha256: '2438df4b4c435a045af1fd176ea2d222e8ec2a7d7e244d87b3531432e4024288', unit: 'mm', unitProvenance: 'BlueSky-linked case geometry report; source coordinates preserved', visible: false, color: '#c78dba', opacity: 0.72 }
-];
-
-async function publicDemoFiles() {
-  const filename = 'demo_box.stl';
-  const bytes = await fs.readFile(path.join(sampleDir, filename));
-  const sha256 = createHash('sha256').update(bytes).digest('hex');
-  const base = { url: '/sample/' + filename, sha256, unit: 'mm', unitToMm: 1, unitProvenance: 'Original synthetic procad fixture; generic dimensions only', color: '#93a6a4', opacity: 0.72, transform: { rotation: [0, 0, 0, 'XYZ'], scale: [1, 1, 1] } };
-  return [
-    { ...base, name: 'Synthetic arch block', role: 'upper', visible: true, color: '#d7dce0', opacity: 0.62, transform: { ...base.transform, position: [0, 0, -3] } },
-    { ...base, name: 'Synthetic antagonist block', role: 'opposing', visible: true, color: '#8ba6b3', opacity: 0.36, transform: { ...base.transform, position: [0, 0, 15] } },
-    { ...base, name: 'Synthetic preparation block', role: 'prep', visible: true, color: '#e4a55c', opacity: 1, transform: { ...base.transform, position: [0, 0, 0] } },
-    { ...base, name: 'Synthetic pre-op block', role: 'preop', visible: false, color: '#a8b3bb', opacity: 0.28, transform: { ...base.transform, position: [0, 0, -8] } }
-  ];
-}
-
-app.get('/api/demo', async (_req, res) => {
-  try {
-    const legacy = usesLegacySample;
-    res.json({
-      id: legacy ? 'bluesky-practice-3' : 'procad-public-demo',
-      title: legacy ? 'Crown practice case · #3' : 'procad public demo · synthetic mesh',
-      source: legacy ? 'BlueSkyPlan-linked Crown Design, Print, Polish practice files' : 'Original synthetic fixture; no patient data or dental scan rights involved',
-      unit: 'mm',
-      files: legacy ? legacyDemoFiles : await publicDemoFiles()
-    });
-  } catch (error) {
-    res.status(503).json({ error: 'The configured demo fixture is unavailable: ' + error.message });
-  }
 });
 function safeCaseId(raw) {
   const id = String(raw || '');
@@ -202,7 +161,7 @@ async function verifySavedProposal(safeId, expectedHash) {
   const file = path.join(stateDir, safeId + '-proposal-' + expectedHash.toLowerCase() + '.stl');
   const bytes = await fs.readFile(file);
   const actualHash = createHash('sha256').update(bytes).digest('hex');
-  if (actualHash !== expectedHash.toLowerCase()) throw new Error('Saved proposal checksum does not match the approval fingerprint.');
+  if (actualHash !== expectedHash.toLowerCase()) throw new Error('Saved proposal checksum does not match the reviewer record.');
   validateGeometry(new STLLoader().parse(toArrayBuffer(bytes)), { requireClosed: true });
   return { bytes: bytes.length, sha256: actualHash };
 }
@@ -248,7 +207,7 @@ app.get('/api/design/:id/approval', async (req, res) => {
   try {
     res.type('json').send(await fs.readFile(path.join(stateDir, safeId + '-approval.json'), 'utf8'));
   } catch {
-    res.status(404).json({ error: 'No approval record exists for this design.' });
+    res.status(404).json({ error: 'No reviewer record exists for this design.' });
   }
 });
 app.post('/api/design/:id/approval', async (req, res) => {
@@ -256,19 +215,21 @@ app.post('/api/design/:id/approval', async (req, res) => {
   if (!safeId) return res.status(400).json({ error: 'Invalid case id.' });
   const body = req.body || {};
   if (body.approved !== true || !String(body.reviewerName || '').trim() || !String(body.approvalId || '').trim() || !/^[a-f0-9]{64}$/i.test(body.designFingerprint || '') || !/^[a-f0-9]{64}$/i.test(body.designContextFingerprint || '')) {
-    return res.status(400).json({ error: 'Approval requires approved=true, reviewer name, approval ID, design fingerprint, and design-context fingerprint.' });
+    return res.status(400).json({ error: 'Reviewer record requires the acknowledgment flag, reviewer name, record ID, design fingerprint, and design-context fingerprint.' });
   }
   let saved;
-  try { saved = await readSavedCase(safeId); } catch { return res.status(404).json({ error: 'Save the design before requesting approval.' }); }
+  try { saved = await readSavedCase(safeId); } catch { return res.status(404).json({ error: 'Save the design before recording a reviewer acknowledgment.' }); }
   const restorationType = saved.currentDesignInputs?.designBrief?.restorationType;
-  if (restorationType !== 'single-crown') return res.status(409).json({ error: 'This restoration type is brief-only and cannot receive a manufacturing approval in the current release.' });
+  if (restorationType !== 'single-crown') return res.status(409).json({ error: 'This restoration type is brief-only and cannot receive a geometry review handoff in the current release.' });
   const savedContextFingerprint = jsonSha256(saved.currentDesignInputs);
-  if (saved.designStale === true || saved.generatedMesh?.sha256 !== body.designFingerprint || savedContextFingerprint !== body.designContextFingerprint.toLowerCase()) return res.status(409).json({ error: 'Approval fingerprint does not match a fresh saved proposal and context.' });
+  if (saved.designStale === true || saved.generatedMesh?.sha256 !== body.designFingerprint || savedContextFingerprint !== body.designContextFingerprint.toLowerCase()) return res.status(409).json({ error: 'Reviewer record fingerprint does not match a fresh saved proposal and context.' });
   try { await verifySavedProposal(safeId, body.designFingerprint); }
   catch (error) { return res.status(409).json({ error: error.message || 'The saved proposal could not be independently verified.' }); }
   const approval = {
     schemaVersion: 1,
     approved: true,
+    recordType: 'SELF_ATTESTED_REVIEW_ACKNOWLEDGMENT',
+    selfAttested: true,
     caseId: safeId,
     reviewerName: String(body.reviewerName).trim().slice(0, 160),
     reviewerRole: String(body.reviewerRole || 'qualified dental reviewer').trim().slice(0, 160),
@@ -296,12 +257,12 @@ app.put('/api/design/:id/cam-artifact', express.raw({ type: '*/*', limit: '100mb
     saved = await readSavedCase(safeId);
     approval = JSON.parse(await fs.readFile(path.join(stateDir, safeId + '-approval.json'), 'utf8'));
   } catch {
-    return res.status(403).json({ error: 'A saved professional approval is required before CAM artifact upload.' });
+    return res.status(403).json({ error: 'A saved reviewer acknowledgment is required before review-file upload.' });
   }
   const restorationType = saved.currentDesignInputs?.designBrief?.restorationType;
   const savedContextFingerprint = jsonSha256(saved.currentDesignInputs);
   if (restorationType !== 'single-crown' || saved.designStale === true || saved.generatedMesh?.sha256 !== designFingerprint || savedContextFingerprint !== designContextFingerprint || approval.approved !== true || approval.designFingerprint !== designFingerprint || approval.designContextFingerprint !== designContextFingerprint) {
-    return res.status(409).json({ error: 'CAM artifact is blocked because approval and the saved proposal do not match.' });
+    return res.status(409).json({ error: 'Review-file upload is blocked because the reviewer record and saved proposal do not match.' });
   }
   try {
     await verifySavedProposal(safeId, designFingerprint);
@@ -316,7 +277,7 @@ app.put('/api/design/:id/cam-artifact', express.raw({ type: '*/*', limit: '100mb
     return res.status(409).json({ error: error.message || 'The CAM artifact failed independent validation.' });
   }
   const sha256 = createHash('sha256').update(req.body).digest('hex');
-  const fileName = safeId + '-CAM-REVIEW-REQUIRED.' + format;
+  const fileName = safeId + '-REVIEW-ONLY.' + format;
   const file = path.join(stateDir, safeId + '-cam-artifact-' + sha256 + '.' + format);
   await fs.writeFile(file, req.body);
   res.json({ ok: true, sha256, bytes: req.body.length, format, fileName });
@@ -326,30 +287,30 @@ app.post('/api/design/:id/cam-handoff', async (req, res) => {
   if (!safeId) return res.status(400).json({ error: 'Invalid case id.' });
   const body = req.body || {};
   const format = String(body.format || '').toLowerCase();
-  if (!['stl', 'obj'].includes(format)) return res.status(400).json({ error: 'CAM handoff format must be STL or OBJ.' });
+  if (!['stl', 'obj'].includes(format)) return res.status(400).json({ error: 'Review handoff format must be STL or OBJ.' });
   if (!/^[a-f0-9]{64}$/i.test(body.designFingerprint || '') || !/^[a-f0-9]{64}$/i.test(body.designContextFingerprint || '') || !/^[a-f0-9]{64}$/i.test(body.artifactSha256 || '') || !String(body.machineProfile || '').trim() || !String(body.camVersion || '').trim() || !String(body.material || '').trim() || !String(body.blank || '').trim() || !String(body.toolProfile || '').trim()) {
-    return res.status(400).json({ error: 'CAM handoff requires matching design, context, and artifact fingerprints plus named machine, CAM version, material, blank, and tool profile.' });
+    return res.status(400).json({ error: 'Review handoff requires matching design, context, and artifact fingerprints plus operator-supplied machine, version, material, blank, and tool labels.' });
   }
   let saved, approval;
   try {
     saved = await readSavedCase(safeId);
     approval = JSON.parse(await fs.readFile(path.join(stateDir, safeId + '-approval.json'), 'utf8'));
   } catch {
-    return res.status(403).json({ error: 'A saved professional approval is required before CAM handoff.' });
+    return res.status(403).json({ error: 'A saved reviewer acknowledgment is required before review handoff.' });
   }
   const restorationType = saved.currentDesignInputs?.designBrief?.restorationType;
-  if (restorationType !== 'single-crown') return res.status(409).json({ error: 'This restoration type is brief-only and cannot be sent to CAM.' });
-  if (body.restorationType && String(body.restorationType) !== restorationType) return res.status(409).json({ error: 'CAM handoff restoration type does not match the saved design brief.' });
+  if (restorationType !== 'single-crown') return res.status(409).json({ error: 'This restoration type is brief-only and cannot be exported as geometry.' });
+  if (body.restorationType && String(body.restorationType) !== restorationType) return res.status(409).json({ error: 'Review handoff restoration type does not match the saved design brief.' });
   const savedContextFingerprint = jsonSha256(saved.currentDesignInputs);
   if (saved.designStale === true || saved.generatedMesh?.sha256 !== body.designFingerprint || savedContextFingerprint !== body.designContextFingerprint.toLowerCase() || approval.approved !== true || approval.designFingerprint !== body.designFingerprint || approval.designContextFingerprint !== body.designContextFingerprint.toLowerCase()) {
-    return res.status(409).json({ error: 'CAM handoff is blocked because approval and the saved proposal do not match.' });
+    return res.status(409).json({ error: 'Review handoff is blocked because the reviewer record and saved proposal do not match.' });
   }
   try { await verifySavedProposal(safeId, body.designFingerprint); }
   catch (error) { return res.status(409).json({ error: error.message || 'The saved proposal could not be independently verified.' }); }
   const artifactFile = path.join(stateDir, safeId + '-cam-artifact-' + body.artifactSha256.toLowerCase() + '.' + format);
   let artifactBytes;
   try { artifactBytes = await fs.readFile(artifactFile); }
-  catch { return res.status(409).json({ error: 'Upload the exact CAM artifact before creating its handoff manifest.' }); }
+  catch { return res.status(409).json({ error: 'Upload the exact review file before creating its handoff manifest.' }); }
   if (createHash('sha256').update(artifactBytes).digest('hex') !== body.artifactSha256.toLowerCase()) return res.status(409).json({ error: 'CAM artifact checksum verification failed.' });
   const stamp = new Date().toISOString();
   const manifest = {
@@ -359,27 +320,31 @@ app.post('/api/design/:id/cam-handoff', async (req, res) => {
     createdAt: stamp,
     delivery: 'local-file-handoff-only',
     directMachineTransmission: false,
+    camStatus: 'GEOMETRY_HANDOFF_ONLY',
     geometry: {
       format,
       units: 'mm',
-      fileName: safeId + '-CAM-REVIEW-REQUIRED.' + format,
+      fileName: safeId + '-REVIEW-ONLY.' + format,
       sha256: body.artifactSha256.toLowerCase(),
       designFingerprint: body.designFingerprint.toLowerCase(),
       status: 'CAM_SIMULATION_AND_OPERATOR_CHECK_REQUIRED'
     },
     machine: {
       profile: String(body.machineProfile).trim().slice(0, 200),
+      profileId: String(body.machineProfileId || '').trim().slice(0, 160) || null,
+      profileStatus: String(body.machineProfileId || '').trim() === 'dgshape-dwx-43w-dgshape-cam-v25.1.0-vita-suprinity-pc-ls14' ? 'CANDIDATE_UNVALIDATED_PUBLIC_SOURCE_ONLY' : 'UNVALIDATED_OPERATOR_SUPPLIED_LABEL',
       camVersion: String(body.camVersion).trim().slice(0, 120),
       material: String(body.material).trim().slice(0, 120),
+      materialStatus: String(body.machineProfileId || '').trim() === 'dgshape-dwx-43w-dgshape-cam-v25.1.0-vita-suprinity-pc-ls14' ? 'CANDIDATE_UNVALIDATED_PUBLIC_SOURCE_ONLY' : 'UNVALIDATED_OPERATOR_SUPPLIED_LABEL',
       blank: String(body.blank).trim().slice(0, 200),
       toolProfile: String(body.toolProfile).trim().slice(0, 200)
     },
     sourceFormats: Array.isArray(body.sourceFormats) ? body.sourceFormats.map((value) => String(value).slice(0, 12)).slice(0, 32) : [],
     restorationType,
-    approval: { reviewerName: approval.reviewerName, reviewerRole: approval.reviewerRole, approvalId: approval.approvalId, reviewedAt: approval.reviewedAt, designFingerprint: approval.designFingerprint, designContextFingerprint: approval.designContextFingerprint },
-    warning: 'This package is not a validated toolpath. The authorized operator must import it into the named CAM system, confirm units and orientation, run the exact machine/material simulation, and approve fabrication.'
+    reviewAcknowledgement: { recordType: approval.recordType, selfAttested: true, reviewerName: approval.reviewerName, reviewerRole: approval.reviewerRole, recordId: approval.approvalId, reviewedAt: approval.reviewedAt, designFingerprint: approval.designFingerprint, designContextFingerprint: approval.designContextFingerprint },
+    warning: 'This review-only package is not a validated toolpath. Candidate profile metadata is transcribed from public manufacturer/CAM documents but is not validated for any installed machine, material lot, holder position, CAM strategy, or physical cut. Reviewer identity is self-attested. It must not be treated as manufacturing authorization. No CAM strategy or machine instructions are included.'
   };
-  manifest.manifestFileName = safeId + '-CAM-handoff.json';
+  manifest.manifestFileName = safeId + '-review-handoff.json';
   await writeStateFile(path.join(stateDir, safeId + '-cam-handoff.json'), manifest);
   res.json({ ok: true, manifest });
 });
@@ -426,7 +391,10 @@ app.put('/api/design/:id/mesh', express.raw({ type: 'application/octet-stream', 
 const hasBuild = await fs.access(distDir).then(() => true).catch(() => false);
 if (hasBuild) {
   app.use(express.static(distDir));
-  app.get(/.*/, (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  app.get(/.*/, (req, res) => {
+    if (/^\/(api|user-meshes|sample)(\/|$)/.test(req.path)) return res.status(404).json({ error: 'Not found.' });
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
 } else {
   app.get('/', (_req, res) => res.status(200).send('procad API is running. Start the Vite development app with npm run dev.'));
 }

@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "id": "dgshape-dwx-43w-dgshape-cam-v25.1.0-vita-suprinity-pc-ls14",
+  "label": "Candidate route · DWX-43W / CAM V25.1.0 / VITA SUPRINITY PC LS-14",
+  "profileStatus": "CANDIDATE_UNVALIDATED",
+  "manufacturingStatus": "BLOCKED_NO_MACHINE_VALIDATION",
+  "claims": "Public manufacturer and CAM quick-guide metadata only. This record does not include a postprocessor, machine calibration, milling strategy, or validated toolpath.",
+  "machine": {
+    "manufacturer": "DGSHAPE",
+    "model": "DWX-43W",
+    "process": "wet grinding",
+    "axes": {
+      "type": "4-axis",
+      "rotaryAxisTravelDegrees": { "aMin": -360, "aMax": 360 },
+      "otherTravelLimits": null
+    },
+    "mounting": {
+      "workpieceType": "pin-type block",
+      "maximumConcurrentWorkpieces": 6,
+      "maximumBlockEnvelopeMm": { "width": 40, "depth": 20, "height": 20 },
+      "pinDiameterMm": { "nominal": 5.9, "tolerancePlusMinus": 0.02 }
+    },
+    "unresolvedMachineData": [
+      "serial number, firmware, calibration and correction record",
+      "fixture and pin-position coordinate transforms",
+      "verified machine-specific collision and reach envelope",
+      "authorized postprocessor configuration and machine output format"
+    ]
+  },
+  "cam": {
+    "product": "DGSHAPE CAM for DWX-43W",
+    "version": "2025 V25.1.0",
+    "versionEvidence": "Version shown in the manufacturer-hosted 3Shape CAM Produce quick guide.",
+    "mode": "external manufacturer CAM; procad does not generate its machine data",
+    "strategy": null
+  },
+  "material": {
+    "manufacturer": "VITA Zahnfabrik",
+    "product": "VITA SUPRINITY PC",
+    "materialClass": "glass ceramic",
+    "blank": {
+      "catalogSize": "LS-14",
+      "dimensionsMm": { "width": 18, "depth": 14.3, "height": 12.2 },
+      "form": "pin-type CAD/CAM block",
+      "lot": null
+    },
+    "materialInstructionsRevision": null,
+    "shrinkageOrCompensation": null
+  },
+  "tools": [
+    { "model": "ZGB-125D", "tipRadiusMm": 1.25, "tipDiameterMm": 2.5, "manufacturerGlassCeramicReplacementHours": 10, "stockerPosition": null },
+    { "model": "ZGB-50D", "tipRadiusMm": 0.5, "tipDiameterMm": 1.0, "manufacturerGlassCeramicReplacementHours": 14, "stockerPosition": null },
+    { "model": "ZGB2-125D", "tipRadiusMm": 1.25, "tipDiameterMm": 2.5, "manufacturerGlassCeramicReplacementHours": 10, "stockerPosition": null },
+    { "model": "ZGB2-50D", "tipRadiusMm": 0.5, "tipDiameterMm": 1.0, "manufacturerGlassCeramicReplacementHours": 14, "stockerPosition": null },
+    { "model": "ZGB2-25D", "tipRadiusMm": 0.25, "tipDiameterMm": 0.5, "manufacturerGlassCeramicReplacementHours": 7, "replacementLimitSharedWith": "ZGB2-75D", "stockerPosition": null }
+  ],
+  "nesting": {
+    "type": "multi-pin fixture placement",
+    "manufacturerMaximumBlocks": 6,
+    "placementCoordinates": null,
+    "verifiedCollisionModel": false
+  },
+  "toolpath": {
+    "generatedByProcad": false,
+    "postprocessorPresent": false,
+    "simulationEvidence": null,
+    "physicalTrialEvidence": null
+  },
+  "validationGates": {
+    "representativeAuthorizedCases": "MISSING",
+    "independentReferenceMeasurements": "MISSING",
+    "materialManufacturerInstructionsAndLot": "MISSING",
+    "exactMachineAndFixtureCalibration": "MISSING",
+    "validatedCamStrategyAndPostprocessor": "MISSING",
+    "collisionSimulation": "MISSING",
+    "physicalMachiningAndIndependentInspection": "MISSING"
+  },
+  "sources": [
+    {
+      "title": "DWX-43W product and technical information",
+      "url": "https://dgshape.com/dwx-43w/",
+      "publisher": "DGSHAPE",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "DWX-43W User's Manual — workpiece and tool replacement information",
+      "url": "https://downloadcenter.rolanddg.com/contents/manuals/DWX-43W_USE_EN.pdf",
+      "publisher": "Roland DG / DGSHAPE",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "3Shape CAM Produce Quick Guide — DWX-43W, CAM V25.1.0, VITA SUPRINITY PC and LS-14 stock",
+      "url": "https://dgshape.com/wp-content/uploads/2025/07/3Shape-CAM-Produce-Quick-Guide-ENG.pdf",
+      "publisher": "DGSHAPE",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "DWX-43W milling bur catalog and geometry",
+      "url": "https://dgshape.com/wp-content/uploads/2025/02/DWX-43W-Brochure-EN.pdf",
+      "publisher": "DGSHAPE",
+      "accessed": "2026-09-27"
+    }
+  ]
+}

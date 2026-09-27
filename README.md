@@ -1,14 +1,8 @@
-# procad Dental CAD
+# procad Dental CAD workbench
 
-procad is a local-first dental-geometry demonstrator. It imports common
-surface meshes and point clouds, displays them in 3D, creates a generic
-single-crown Boolean preview from supported surface inputs, records scan
-provenance, and saves review-only geometry locally.
+procad is a local-first engineering prototype for dental scan intake, provenance, mesh inspection, operator-entered 3D preparation tracing, and a bounded single-crown geometry preview. It is not a validated clinical CAD/CAM product or milling engine.
 
-The public repository ships an original synthetic box fixture so a fresh clone
-has a deterministic demo without patient data or an unlicensed scan dataset.
-It is not a dental scan, anatomical tooth library, clinical system, or CAM
-toolpath generator.
+The app starts with an empty, saved case. It does not ship synthetic dental examples or automatically load private practice data. Import only scan files you are authorized to use.
 
 ## Run from source
 
@@ -20,8 +14,7 @@ npm ci
 npm run dev
 ```
 
-Open the Vite address printed in the terminal, normally
-`http://127.0.0.1:5173`.
+Open the Vite address printed in the terminal, normally `http://127.0.0.1:5173`.
 
 For the production server:
 
@@ -33,61 +26,32 @@ npm start
 
 Then open `http://127.0.0.1:4179`.
 
-On Windows, `npm run desktop:pack` builds a portable Electron package into
-`exports/desktop/`. Build output is intentionally ignored by GitHub; release
-artifacts can be produced from a tagged checkout.
+On Windows, `npm run desktop:pack` builds a portable Electron package into `exports/desktop/`. Build output is ignored by GitHub; release artifacts can be produced from a tagged checkout.
 
-## Verify
+## Current functions
 
-```powershell
-cd app
-npm test
-npm run build
-```
+- Imports STL, PLY, OBJ, and OFF surface meshes, plus XYZ, PTS, CSV, and ASCII PCD point clouds with an explicit source-unit declaration.
+- Converts declared coordinates to millimetres, records source hashes and case provenance, and checks basic mesh topology and finite coordinates.
+- Saves and reopens local cases and their review-proposal mesh.
+- Records an operator-entered 3D loop on a preparation surface, bound to the source mesh hash and prep-local millimetre frame. A simple XY radial trace drives the boundary of the parametric envelope preview.
+- Generates a single-crown Boolean geometry preview from a closed preparation mesh. A failed prep offset stops generation instead of silently falling back to the unoffset preparation.
+- Calculates a deterministic area-weighted, unsigned nearest-surface distance diagnostic between sampled preparation triangles and the final preview mesh. It reports percentiles and opposed-normal heuristic coverage; it does not validate fit or identify a clinical intaglio with proven accuracy.
+- Exports review-only STL or a local STL/OBJ handoff manifest after a self-attested review record. The app does not create toolpaths or contact a milling machine.
 
-GitHub Actions runs the same test and build checks for pushes and pull requests.
+The outer morphology remains a generic parametric approximation, not tooth-specific anatomy. An operator trace does not prove the finish line was correctly identified. The offset is a construction input; the unsigned map has no signed gap, uncertainty estimate, acceptance threshold, seating assessment, or clinical interpretation. Antagonist positioning is manual and unverified.
 
-## What the demo does
+The repo includes one public-source **candidate metadata record** for DGSHAPE DWX-43W, DGSHAPE CAM for DWX-43W 2025 V25.1.0, and VITA SUPRINITY PC LS-14. It is not a validated machine/material profile and procad does not generate the external CAM product's machine data. See [the candidate route evidence](docs/profiles/DWX-43W-VITA-SUPRINITY-PC-candidate.md).
 
-- imports STL, PLY, OBJ, and OFF surface meshes plus XYZ, PTS, CSV, and ASCII PCD point clouds with declared source units;
-- checks mesh topology and non-finite coordinates;
-- previews a single crown shell with a preparation-derived cavity;
-- stores local case manifests, SHA-256 provenance, and generated review STL;
-- keeps review export behind an acknowledgement and gates the local CAM handoff behind a fingerprinted approval record and operator-entered CAM profile;
-- provides local Markdown skills for input data, professional dental design, anatomy references, and CAM approval.
-- includes a restoration-routing library for crowns, copings/cutbacks, inlays/onlays, veneers, bridges, implant crowns, and custom abutments; unsupported geometry remains explicitly brief-only.
+## Not implemented or validated
 
-The workflow is intentionally bounded. A closed mesh does not prove margin fit,
-wall thickness, occlusion, material suitability, or millability.
+procad does not provide a validated margin detector, clinically measured intaglio fit, bite-record registration solver, validated contact map or articulation, bridge/pontic or implant geometry, licensed component libraries, validated material or machine profiles, fixture-aware nesting, CAM simulation, postprocessors, or machine toolpaths. The single-crown output has not been independently validated on licensed dental cases or fabricated restorations. A closed mesh, software test, review acknowledgment, candidate profile, or checksum does not establish clinical fit or milling readiness.
 
-Point clouds are view-only until they are separately reconstructed and quality-
-checked. The CAM handoff creates a local STL/OBJ plus manifest for operator
-import and simulation; it does not contact a machine or generate a toolpath.
+See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for the release boundary and evidence needed to enable clinical or manufacturing claims. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/OPEN_SOURCE_NOTICES.md](docs/OPEN_SOURCE_NOTICES.md) for system structure and dependency notes.
 
 ## Data and privacy
 
-The app binds to loopback by default. Do not put identifiable patient data into
-this prototype. Uploaded meshes and saved cases stay under local runtime data
-directories and are ignored by Git.
-
-The local `BlueSky_Crown_Practice` dataset used during private engineering work
-is intentionally excluded from the public repository because redistribution
-rights were not established. See [docs/OPEN_SOURCE_NOTICES.md](docs/OPEN_SOURCE_NOTICES.md).
-
-## Scope and limitations
-
-procad is not a medical device, clinical recommendation system, validated
-dental CAD/CAM product, milling engine, or replacement for professional
-judgment. It does not provide a traced 3D margin, measured intaglio fit,
-validated bite registration, contact map, bridge/implant workflows, material
-profiles, machine profiles, nesting, or toolpaths.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[docs/LIMITATIONS.md](docs/LIMITATIONS.md), and
-[docs/OPEN_SOURCE_NOTICES.md](docs/OPEN_SOURCE_NOTICES.md) for the design
-boundary and dependency notes.
+The app binds to loopback by default. Uploaded scans and saved cases are stored in local runtime data directories and are ignored by Git. No patient data or practice dataset is bundled. Use only data you are authorized to process and protect it according to your lab’s privacy requirements.
 
 ## License
 
-The source code and original synthetic fixture are available under the
-[MIT License](LICENSE). Third-party dependencies retain their own licenses.
+The source code is available under the [MIT License](LICENSE). Third-party dependencies retain their own licenses.

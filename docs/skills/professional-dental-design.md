@@ -31,7 +31,7 @@ The current application can generate an illustrative single-crown Boolean previe
 
 ## 5. Review before manufacturing
 
-Review the current design fingerprint against the case source. A qualified dental professional should inspect margin continuity, insertion path, intaglio relief, minimum wall thickness, proximal contacts, occlusal contacts, emergence profile, hygiene contours, antagonist relationship, material choice, and machine/CAM constraints. An explicit approval record is required in the app before a CAM handoff package can be exported.
+Review the current design fingerprint against the case source. A qualified dental professional should inspect margin continuity, insertion path, intaglio relief, minimum wall thickness, proximal contacts, occlusal contacts, emergence profile, hygiene contours, antagonist relationship, material choice, and machine/CAM constraints. The app can store a self-attested reviewer acknowledgment before exporting a local geometry handoff; it cannot authenticate the reviewer or authorize manufacturing.
 
 ## Anatomical reference images
 
@@ -44,4 +44,3 @@ These linked images are study aids, not patient-specific design templates. They 
 ![Tooth anatomy plate from Gray's Anatomy](https://commons.wikimedia.org/wiki/Special:FilePath/Gray1005.png)
 
 Check the source page and its current license before redistributing an image. The linked tooth-section assets are marked by Wikimedia Commons as public-domain or CC BY-SA/GFDL depending on the file; attribution and share-alike obligations may apply. The Oral Facial Anatomy Online resource is licensed CC BY-NC-ND except where otherwise noted, so it is linked for study and not copied into this repository.
-

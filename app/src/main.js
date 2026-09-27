@@ -3,23 +3,19 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
-import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { inspectClosedMesh } from './mesh-validation.js';
+import { measureDirectedUnsignedSurfaceDistance, sampleClosedMargin } from './dental-geometry.js';
 import ManifoldModule from 'manifold-3d/manifold';
 import manifoldWasmUrl from 'manifold-3d/manifold.wasm?url';
-import { MeshBVH } from 'three-mesh-bvh';
 import { ACCEPTED_EXTENSIONS, POINT_CLOUD_EXTENSIONS, parseMeshText } from './mesh-formats.js';
 import './styles.css';
 import './case-ui.css';
 import './import-ui.css';
 
 const $ = (id) => document.getElementById(id);
-const BUILT_IN_DEMO_IDS = new Set(['bluesky-practice-3', 'procad-public-demo']);
 const ACTIVE_CASE_STORAGE_KEY = 'procad-active-case-id';
 const LEGACY_ACTIVE_CASE_STORAGE_KEY = 'opencusp-active-case-id';
-function isBuiltInDemoId(id = caseData?.id) { return BUILT_IN_DEMO_IDS.has(id); }
-function isLegacyTrainingCase(id = caseData?.id) { return id === 'bluesky-practice-3'; }
 const viewport = $('viewport');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf1f4f5);
@@ -65,10 +61,14 @@ let savedDesignHash = null;
 let savedDesignContextHash = null;
 let isolationSnapshot = null;
 let viewVisibilitySnapshot = null;
+let marginTrace = { sourceSha256: null, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+let marginTraceActive = false;
+let intaglioMapRecord = null;
+let intaglioMapOverlay = null;
+const marginTraceOverlay = new THREE.Group();
+scene.add(marginTraceOverlay);
 const raycaster = new THREE.Raycaster();
 let manifoldWasm = null;
-let lastOcclusionGap = null;
-let alignmentTimer = null;
 const pointer = new THREE.Vector2();
 const stlLoader = new STLLoader();
 const plyLoader = new PLYLoader();
@@ -265,9 +265,9 @@ function setApprovalStatus(message, kind = 'pending') {
 function updateApprovalUI() {
   const current = Boolean(approvalRecord && savedDesignHash && savedDesignContextHash && approvalRecord.designFingerprint === savedDesignHash && approvalRecord.designContextFingerprint === savedDesignContextHash && designMesh && !designIsStale() && $('review-confirm')?.checked);
   if (current) {
-    setApprovalStatus('Approved by ' + approvalRecord.reviewerName + ' · ' + approvalRecord.approvalId, 'approved');
+    setApprovalStatus('Self-attested by ' + approvalRecord.reviewerName + ' · ' + approvalRecord.approvalId, 'approved');
   } else {
-    setApprovalStatus('Not approved for CAM handoff', 'pending');
+    setApprovalStatus('No current reviewer record', 'pending');
   }
   if ($('approval-button')) $('approval-button').disabled = !designMesh || !lastDesignClosed || designIsStale() || !$('review-confirm')?.checked;
   if ($('cam-handoff-button')) $('cam-handoff-button').disabled = !current;
@@ -287,16 +287,18 @@ function clearDesign() {
   }
   $('export-button').disabled = true;
   $('export-button-side').disabled = true;
+  $('measure-intaglio-button').disabled = true;
   $('review-confirm').checked = false;
   designSnapshot = null;
   savedDesignHash = null;
   savedDesignContextHash = null;
   lastDesignClosed = false;
+  ensureIntaglioMapOverlay();
   clearApprovalState();
-  setQc('qc-fit', 'Pending', 'pending');
+  setQc('qc-fit', 'Not measured', 'pending');
   setQc('qc-closed', 'Pending', 'pending');
   setQc('qc-wall', 'Pending', 'pending');
-  setQc('qc-occlusion', 'Unverified', 'warn');
+  setQc('qc-occlusion', 'No bite registration', 'warn');
   setDesignStatus('No design generated yet');
   updateSceneCount();
 }
@@ -309,12 +311,208 @@ function getOpposingMesh() {
 function getReferenceMesh() {
   return meshes.find((m) => m.userData.role === 'reference');
 }
+function isVisibleInScene(object) {
+  for (let current = object; current; current = current.parent) {
+    if (!current.visible) return false;
+  }
+  return true;
+}
+function disposeGroupContents(group) {
+  for (const child of [...group.children]) {
+    group.remove(child);
+    child.geometry?.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => material?.dispose());
+  }
+}
+function renderMarginTrace() {
+  disposeGroupContents(marginTraceOverlay);
+  const prep = getPrepMesh();
+  if (!prep || marginTrace.points.length === 0 || marginTrace.sourceSha256 !== prep.userData.sha256) return;
+  prep.updateMatrixWorld(true);
+  const worldPoints = marginTrace.points.map((point) => prep.localToWorld(new THREE.Vector3(...point)));
+  const shownPoints = marginTrace.closed && worldPoints.length > 2 ? [...worldPoints, worldPoints[0].clone()] : worldPoints;
+  const lineGeometry = new THREE.BufferGeometry().setFromPoints(shownPoints);
+  const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: marginTrace.closed ? 0x13a892 : 0xf08a36, depthTest: true, transparent: true, opacity: 0.95 }));
+  line.renderOrder = 20;
+  marginTraceOverlay.add(line);
+  const pointGeometry = new THREE.BufferGeometry().setFromPoints(worldPoints);
+  const points = new THREE.Points(pointGeometry, new THREE.PointsMaterial({ color: 0xf08a36, size: 0.34, sizeAttenuation: true, depthTest: true }));
+  points.renderOrder = 21;
+  marginTraceOverlay.add(points);
+}
+function refreshMarginTraceControls() {
+  const prep = getPrepMesh();
+  const sameSource = Boolean(prep && marginTrace.sourceSha256 && marginTrace.sourceSha256 === prep.userData.sha256);
+  $('margin-trace-toggle').textContent = marginTraceActive ? 'Pause trace' : marginTrace.closed ? 'Start new trace' : marginTrace.points.length ? 'Continue trace' : 'Start new trace';
+  $('margin-trace-undo').disabled = marginTrace.points.length === 0;
+  $('margin-trace-close').disabled = !marginTraceActive || marginTrace.points.length < 12;
+  $('margin-trace-clear').disabled = marginTrace.points.length === 0 && !marginTraceActive;
+  $('margin-trace-status').textContent = !prep
+    ? 'Load a preparation surface before tracing.'
+    : marginTrace.points.length === 0
+      ? 'No operator trace. A closed trace is not proof that the clinical finish line was identified correctly.'
+      : !sameSource
+        ? 'Trace source does not match the current preparation; clear it and retrace.'
+        : marginTrace.closed
+          ? `Closed piecewise-linear annotation · ${marginTrace.points.length} points · source hash bound · chords are a construction proxy; clinical margin remains unverified.`
+          : `${marginTraceActive ? 'Tracing' : 'Open trace'} · ${marginTrace.points.length} points · connecting chords are a construction proxy; review the full preparation.`;
+  renderer.domElement.classList.toggle('trace-active', marginTraceActive);
+}
+function startOrContinueMarginTrace() {
+  const prep = getPrepMesh();
+  if (!prep || prep.userData.geometryType !== 'surface-mesh') return notify('Load a preparation surface mesh before tracing a margin.', 4000);
+  if (marginTraceActive) {
+    marginTraceActive = false;
+    controls.enabled = true;
+    refreshMarginTraceControls();
+    return;
+  }
+  if (marginTrace.closed || marginTrace.sourceSha256 !== prep.userData.sha256) {
+    marginTrace = { sourceSha256: prep.userData.sha256, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+  }
+  marginTraceActive = true;
+  controls.enabled = false;
+  clearDesign();
+  renderMarginTrace();
+  refreshMarginTraceControls();
+  notify('Click the frontmost visible preparation surface. Straight chords connect points; pause before orbiting.');
+}
+function addMarginTracePoint(worldPoint) {
+  const prep = getPrepMesh();
+  if (!marginTraceActive || !prep || prep.userData.sha256 !== marginTrace.sourceSha256) return;
+  if (marginTrace.points.length >= 512) return notify('The local trace limit is 512 points. Review or clear the trace before continuing.', 3500);
+  const local = prep.worldToLocal(worldPoint.clone());
+  if (marginTrace.points.length) {
+    const previous = new THREE.Vector3(...marginTrace.points[marginTrace.points.length - 1]);
+    if (previous.distanceTo(local) < 0.08) return;
+  }
+  marginTrace.points.push(local.toArray());
+  marginTrace.closed = false;
+  renderMarginTrace();
+  refreshMarginTraceControls();
+  if (designMesh) refreshDesignFreshness();
+}
+function closeMarginTrace() {
+  const prep = getPrepMesh();
+  if (!prep || prep.userData.sha256 !== marginTrace.sourceSha256) return notify('The trace must belong to the currently loaded preparation.', 4000);
+  try {
+    sampleClosedMargin(marginTrace.points, 96);
+  } catch (error) {
+    return notify(error.message, 5000);
+  }
+  marginTrace.closed = true;
+  marginTraceActive = false;
+  controls.enabled = true;
+  clearDesign();
+  renderMarginTrace();
+  refreshMarginTraceControls();
+  notify('Operator trace closed. The finish line is still unverified.');
+}
+function undoMarginTracePoint() {
+  if (!marginTrace.points.length) return;
+  marginTrace.points.pop();
+  marginTrace.closed = false;
+  marginTraceActive = true;
+  controls.enabled = false;
+  clearDesign();
+  renderMarginTrace();
+  refreshMarginTraceControls();
+}
+function clearMarginTrace() {
+  marginTraceActive = false;
+  controls.enabled = true;
+  marginTrace = { sourceSha256: null, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+  disposeGroupContents(marginTraceOverlay);
+  clearDesign();
+  refreshMarginTraceControls();
+}
+function ensureIntaglioMapOverlay() {
+  if (intaglioMapOverlay) {
+    scene.remove(intaglioMapOverlay);
+    intaglioMapOverlay.geometry.dispose();
+    intaglioMapOverlay.material.dispose();
+    intaglioMapOverlay = null;
+  }
+  intaglioMapRecord = null;
+  $('intaglio-map-status').textContent = 'No diagnostic. It reports unsigned nearest-surface geometry only; it has no clinical pass threshold.';
+  setQc('qc-fit', 'Not measured', 'pending');
+}
+function showIntaglioMap(record) {
+  if (intaglioMapOverlay) {
+    scene.remove(intaglioMapOverlay);
+    intaglioMapOverlay.geometry.dispose();
+    intaglioMapOverlay.material.dispose();
+    intaglioMapOverlay = null;
+  }
+  if (!record) return;
+  let overlayStatus = 'Saved summary only; sample overlay was not persisted.';
+  if (record.samples?.length) {
+    const eligible = record.samples.filter((sample) => sample.normalDot <= -0.35);
+    overlayStatus = eligible.length ? 'Relative color scale on the opposed-normal heuristic subset.' : 'No samples met the opposed-normal heuristic; no color overlay is displayed.';
+    const values = eligible.map((sample) => sample.distanceMm);
+    const min = values.length ? Math.min(...values) : 0;
+    const max = values.length ? Math.max(...values) : 0;
+    const span = max - min || 1;
+    const positions = [], colors = [];
+    for (const sample of eligible) {
+      positions.push(...sample.point);
+      const t = (sample.distanceMm - min) / span;
+      const color = new THREE.Color().setHSL(0.62 * (1 - t), 0.82, 0.52);
+      colors.push(color.r, color.g, color.b);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    intaglioMapOverlay = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.16, sizeAttenuation: true, vertexColors: true, depthTest: false }));
+    intaglioMapOverlay.renderOrder = 22;
+    scene.add(intaglioMapOverlay);
+  }
+  const subset = record.opposedNormalSubset;
+  $('intaglio-map-status').textContent = `Unsigned ${record.direction.toLowerCase()}: n=${record.sampleCount}, opposed-normal subset=${Math.round(record.opposedNormalCoverage * 100)}%, subset median ${subset.medianMm == null ? 'n/a' : subset.medianMm.toFixed(3)} mm, p05–p95 ${subset.p05Mm == null ? 'n/a' : subset.p05Mm.toFixed(3)}–${subset.p95Mm == null ? 'n/a' : subset.p95Mm.toFixed(3)} mm. ${overlayStatus} No pass/fail or clinical interpretation.`;
+  setQc('qc-fit', `Unsigned estimate · ${Math.round(record.opposedNormalCoverage * 100)}% heuristic coverage`, 'warn');
+}
+async function calculateIntaglioMap() {
+  const prep = getPrepMesh();
+  if (!prep || !designMesh || !lastDesignClosed || designIsStale()) return notify('Generate a fresh closed preview before calculating a geometric distance map.', 4200);
+  if (marginTrace.sourceSha256 !== prep.userData.sha256 || !marginTrace.closed) return notify('A closed operator trace on this preparation is required.', 4200);
+  $('measure-intaglio-button').disabled = true;
+  $('intaglio-map-status').textContent = 'Sampling preparation triangles and querying the generated restoration surface…';
+  try {
+    prep.updateMatrixWorld(true);
+    designMesh.updateMatrixWorld(true);
+    const distanceMap = measureDirectedUnsignedSurfaceDistance(prep.geometry, designMesh.geometry, {
+      sourceMatrix: prep.matrixWorld,
+      targetMatrix: designMesh.matrixWorld,
+      sampleCount: 5000
+    });
+    distanceMap.status = 'UNVALIDATED_UNSIGNED_GEOMETRIC_DIAGNOSTIC';
+    distanceMap.sourceSha256 = prep.userData.sha256;
+    distanceMap.geometryEngine = 'procad-traced-envelope-preview-v2';
+    intaglioMapRecord = distanceMap;
+    showIntaglioMap(distanceMap);
+    notify('Unsigned surface-distance diagnostic calculated. It is not a fit validation.');
+  } catch (error) {
+    console.error(error);
+    $('intaglio-map-status').textContent = 'Map unavailable: ' + (error.message || 'surface-distance calculation failed.');
+    setQc('qc-fit', 'Measurement failed', 'warn');
+    notify(error.message || 'Could not calculate surface distances.', 4500);
+  } finally {
+    $('measure-intaglio-button').disabled = false;
+  }
+}
 function currentDesignInputs() {
   const prep = getPrepMesh();
   const opposing = getOpposingMesh();
-  const reference = getReferenceMesh();
   return {
-    geometryEngine: 'procad-boolean-preview-v1',
+    geometryEngine: 'procad-traced-envelope-preview-v2',
+    marginTrace: {
+      provenance: marginTrace.provenance,
+      sourceSha256: marginTrace.sourceSha256,
+      coordinateFrame: 'preparation-local-mm',
+      points: marginTrace.points,
+      closed: marginTrace.closed
+    },
     prep: prep ? {
       url: prep.userData.url,
       sha256: prep.userData.sha256,
@@ -329,28 +527,26 @@ function currentDesignInputs() {
       unitToMm: opposing.userData.unitToMm || 1,
       position: opposing.position.toArray(),
       rotation: opposing.rotation.toArray(),
-      scale: opposing.scale.toArray(),
-      userMarkedBiteRegistrationChecked: $('bite-verified').checked
+      scale: opposing.scale.toArray()
     } : null,
-    reference: reference ? {
-      url: reference.userData.url,
-      sha256: reference.userData.sha256,
-      unitToMm: reference.userData.unitToMm || 1,
-      position: reference.position.toArray(),
-      rotation: reference.rotation.toArray(),
-      scale: reference.scale.toArray()
+    reference: getReferenceMesh() ? {
+      url: getReferenceMesh().userData.url,
+      sha256: getReferenceMesh().userData.sha256,
+      unitToMm: getReferenceMesh().userData.unitToMm || 1,
+      position: getReferenceMesh().position.toArray(),
+      rotation: getReferenceMesh().rotation.toArray(),
+      scale: getReferenceMesh().scale.toArray()
     } : null,
     reliefMm: Number($('clearance').value),
-    trimDepthMm: Number($('margin').value),
     envelopeExpansionMm: Number($('wall').value),
     cuspAmplitude: Number($('anatomy').value),
-    designSource: $('design-source').value,
+    designSource: 'parametric-envelope-from-operator-trace',
     designBrief: {
       toothId: $('brief-tooth-id')?.value.trim() || '',
       dentition: $('brief-dentition')?.value || 'permanent',
       arch: $('brief-arch')?.value || 'maxillary',
       restorationType: $('brief-restoration-type')?.value || 'single-crown',
-      anatomyReference: $('brief-reference')?.value || 'procedural'
+      anatomyReference: $('brief-reference')?.value || 'parametric-envelope'
     }
   };
 }
@@ -381,7 +577,7 @@ function validateDesignBrief(requireTooth = false) {
   return null;
 }
 function validateNumericInputs() {
-  for (const id of ['clearance', 'margin', 'wall', 'anatomy', 'opp-x', 'opp-y', 'opp-z', 'opp-rx', 'opp-ry', 'opp-rz']) {
+  for (const id of ['clearance', 'wall', 'anatomy', 'opp-x', 'opp-y', 'opp-z', 'opp-rx', 'opp-ry', 'opp-rz']) {
     const input = $(id);
     if (input.value.trim() === '') {
       input.setAttribute('aria-invalid', 'true');
@@ -407,14 +603,16 @@ function refreshDesignFreshness() {
   if (!designMesh) return;
   const stale = designIsStale();
   if (stale) {
+    ensureIntaglioMapOverlay();
     $('review-confirm').checked = false;
     if (approvalRecord) clearApprovalState();
     setQc('qc-fit', 'Inputs changed · regenerate', 'warn');
     setDesignStatus('Preview stale · regenerate before review', '!');
   } else {
-    setQc('qc-fit', 'Boolean completed · fit NOT EVALUATED', 'warn');
-    setDesignStatus(lastDesignClosed ? 'Proposal preview generated · fit NOT EVALUATED' : 'Preview mesh integrity failed', '!');
+    setQc('qc-fit', intaglioMapRecord ? 'Unsigned estimate · unvalidated' : 'Not measured', intaglioMapRecord ? 'warn' : 'pending');
+    setDesignStatus(lastDesignClosed ? 'Trace-driven preview · clinical validation NOT established' : 'Preview mesh integrity failed', '!');
   }
+  $('measure-intaglio-button').disabled = !lastDesignClosed || stale;
   const canExport = lastDesignClosed && !stale && $('review-confirm').checked;
   $('export-button').disabled = !canExport;
   $('export-button-side').disabled = !canExport;
@@ -434,14 +632,12 @@ function updateCaseInputStatus() {
   status('status-opposing', opposing ? (opposing.userData.geometryType === 'point-cloud' ? 'Point cloud' : 'Present') : 'Missing', Boolean(opposing));
   const reference = getReferenceMesh();
   $('reference-status').textContent = reference
-    ? 'Reference mesh loaded. Placement uses a bounding-box fit into the preparation frame; registration remains unverified.'
-    : 'No reference crown is loaded. The procedural fallback is a generic research shell.';
-  if (!reference && $('design-source').value === 'reference') $('design-source').value = 'procedural';
-  const training = isLegacyTrainingCase();
+    ? 'Reference mesh loaded for visual comparison only. The app does not align or copy its anatomy.'
+    : 'No reference restoration is loaded. The parametric envelope is a non-clinical geometry preview.';
   const toothId = $('brief-tooth-id')?.value.trim();
-  $('tooth-label').textContent = training ? 'Training label #3' : toothId ? 'FDI ' + toothId : 'Not assigned';
-  $('restoration-tooth-badge').textContent = training ? '3' : toothId || '—';
-  $('restoration-tooth-label').textContent = training ? 'Training tooth #3' : toothId ? 'FDI tooth ' + toothId : 'Tooth not assigned';
+  $('tooth-label').textContent = toothId ? 'FDI ' + toothId : 'Not assigned';
+  $('restoration-tooth-badge').textContent = toothId || '—';
+  $('restoration-tooth-label').textContent = toothId ? 'FDI tooth ' + toothId : 'Tooth not assigned';
   const restorationLabels = {
     'single-crown': 'Full-contour crown preview',
     'coping-cutback': 'Coping / cutback brief · non-manufacturing',
@@ -451,7 +647,8 @@ function updateCaseInputStatus() {
     'implant-crown': 'Implant crown brief · library required',
     'abutment-review': 'Abutment brief · non-manufacturing'
   };
-  $('restoration-sub-label').textContent = training ? 'Practice case · crown preview' : (restorationLabels[$('brief-restoration-type')?.value] || 'Design brief');
+  $('restoration-sub-label').textContent = restorationLabels[$('brief-restoration-type')?.value] || 'Design brief';
+  refreshMarginTraceControls();
 }
 
 function signedVolume(geometry) {
@@ -573,26 +770,26 @@ async function manifoldDifference(outerGeometry, innerGeometry) {
     inner.delete();
   }
 }
-function makeCrownOuter(prepGeometry, wall, anatomy, marginDepth) {
+function makeCrownOuter(prepGeometry, wall, anatomy, marginPoints) {
   const box = prepGeometry.boundingBox || new THREE.Box3().setFromBufferAttribute(prepGeometry.attributes.position);
   const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const marginZ = box.max.z - marginDepth;
+  const marginRing = sampleClosedMargin(marginPoints, 96).map((point) => new THREE.Vector3(...point));
+  const center = marginRing.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / marginRing.length);
   const height = Math.max(5.7, Math.min(8.6, 6.25 + wall * 0.48));
-  const rx = Math.max(size.x * 0.5 + wall, 4.5);
-  const ry = Math.max(size.y * 0.5 + wall, 4.4);
+  const rx = Math.max(...marginRing.map((point) => Math.abs(point.x - center.x)), size.x * 0.1, 0.1);
+  const ry = Math.max(...marginRing.map((point) => Math.abs(point.y - center.y)), size.y * 0.1, 0.1);
   const sideRings = 30, radialSteps = 12, segments = 96;
   const positions = [], indices = [];
   const push = (x, y, z) => { positions.push(x, y, z); return positions.length / 3 - 1; };
   const side = [];
   for (let ring = 0; ring <= sideRings; ring++) {
     const t = ring / sideRings;
-    const radial = 0.82 + 0.2 * Math.sin(Math.PI * t) - 0.025 * t;
-    const z = marginZ + height * t;
     const row = [];
     for (let j = 0; j < segments; j++) {
-      const a = j / segments * Math.PI * 2;
-      row.push(push(center.x + rx * radial * Math.cos(a), center.y + ry * radial * Math.sin(a), z));
+      const base = marginRing[j];
+      const radial = new THREE.Vector2(base.x - center.x, base.y - center.y).normalize();
+      const bulge = wall * 0.12 * Math.sin(Math.PI * t);
+      row.push(push(base.x + radial.x * bulge, base.y + radial.y * bulge, base.z + height * t));
     }
     side.push(row);
   }
@@ -603,7 +800,7 @@ function makeCrownOuter(prepGeometry, wall, anatomy, marginDepth) {
       indices.push(a, b, c, a, c, d);
     }
   }
-  const bottomCenter = push(center.x, center.y, marginZ);
+  const bottomCenter = push(center.x, center.y, center.z);
   for (let j = 0; j < segments; j++) {
     const jn = (j + 1) % segments;
     indices.push(bottomCenter, side[0][jn], side[0][j]);
@@ -624,14 +821,16 @@ function makeCrownOuter(prepGeometry, wall, anatomy, marginDepth) {
     const r = 1 - k / radialSteps;
     const row = [];
     if (k === radialSteps) {
-      row.push(push(center.x, center.y, marginZ + height + cuspHeight(0, 0, 0)));
+      row.push(push(center.x, center.y, center.z + height + cuspHeight(0, 0, 0)));
       topRows.push(row);
       continue;
     }
     for (let j = 0; j < segments; j++) {
-      const a = j / segments * Math.PI * 2;
-      const x = r * Math.cos(a), y = r * Math.sin(a);
-      row.push(push(center.x + rx * 0.795 * x, center.y + ry * 0.795 * y, marginZ + height + cuspHeight(x, y, r)));
+      const top = marginRing[j];
+      const nx = (top.x - center.x) / rx;
+      const ny = (top.y - center.y) / ry;
+      const x = nx * r, y = ny * r;
+      row.push(push(center.x + (top.x - center.x) * r, center.y + (top.y - center.y) * r, center.z + height + cuspHeight(x, y, r)));
     }
     topRows.push(row);
   }
@@ -663,157 +862,11 @@ function makeCrownOuter(prepGeometry, wall, anatomy, marginDepth) {
   }
   return geometry;
 }
-function capOpenBoundaries(geometry) {
-  if (!geometry.index) return geometry;
-  const index = geometry.index.array;
-  const edges = new Map();
-  const addEdge = (from, to) => {
-    const lo = Math.min(from, to), hi = Math.max(from, to);
-    const key = `${lo}:${hi}`;
-    const entry = edges.get(key);
-    if (entry) entry.count += 1;
-    else edges.set(key, { count: 1, from, to });
-  };
-  for (let i = 0; i < index.length; i += 3) {
-    addEdge(index[i], index[i + 1]);
-    addEdge(index[i + 1], index[i + 2]);
-    addEdge(index[i + 2], index[i]);
-  }
-  const boundary = [...edges.values()].filter((edge) => edge.count === 1);
-  if (!boundary.length) return geometry;
-  const incident = new Map();
-  boundary.forEach((edge, edgeIndex) => {
-    for (const vertex of [edge.from, edge.to]) {
-      const list = incident.get(vertex) || [];
-      list.push(edgeIndex);
-      incident.set(vertex, list);
-    }
-  });
-  const used = new Set();
-  const loops = [];
-  for (let startIndex = 0; startIndex < boundary.length; startIndex++) {
-    if (used.has(startIndex)) continue;
-    const start = boundary[startIndex];
-    const loop = [start.from, start.to];
-    let previousVertex = start.from;
-    let currentVertex = start.to;
-    used.add(startIndex);
-    let closed = false;
-    for (let guard = 0; guard <= boundary.length; guard++) {
-      if (currentVertex === loop[0]) { closed = true; break; }
-      const candidates = (incident.get(currentVertex) || []).filter((candidate) => !used.has(candidate));
-      const nextEdgeIndex = candidates[0];
-      if (nextEdgeIndex === undefined) break;
-      used.add(nextEdgeIndex);
-      const edge = boundary[nextEdgeIndex];
-      const nextVertex = edge.from === currentVertex ? edge.to : edge.from;
-      previousVertex = currentVertex;
-      currentVertex = nextVertex;
-      loop.push(currentVertex);
-    }
-    if (closed && loop.length >= 4) loops.push(loop.slice(0, -1));
-  }
-  if (!loops.length) return geometry;
-  const pos = geometry.attributes.position;
-  const positions = Array.from(pos.array);
-  const newIndices = Array.from(index);
-  const center = new THREE.Vector3();
-  for (const loop of loops) {
-    center.set(0, 0, 0);
-    for (const vertexIndex of loop) center.add(new THREE.Vector3().fromBufferAttribute(pos, vertexIndex));
-    center.multiplyScalar(1 / loop.length);
-    const centerIndex = positions.length / 3;
-    positions.push(center.x, center.y, center.z);
-    for (let i = 0; i < loop.length; i++) {
-      const from = loop[i], to = loop[(i + 1) % loop.length];
-      newIndices.push(centerIndex, from, to);
-    }
-  }
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setIndex(newIndices);
-  if (signedVolume(geometry) < 0) {
-    const array = geometry.index.array;
-    for (let i = 0; i < array.length; i += 3) {
-      const swap = array[i + 1]; array[i + 1] = array[i + 2]; array[i + 2] = swap;
-    }
-    geometry.index.needsUpdate = true;
-  }
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  return geometry;
-}
-function makeReferenceOuter(referenceGeometry, prepGeometry, wall, marginDepth) {
-  let geometry = solidGeometry(referenceGeometry, 0.00002);
-  const sourceTopology = closureCheck(geometry);
-  if (!sourceTopology.closed || sourceTopology.nonManifold > 0 || sourceTopology.degenerate > 0) {
-    const points = [];
-    const sourcePosition = geometry.attributes.position;
-    for (let i = 0; i < sourcePosition.count; i++) points.push(new THREE.Vector3().fromBufferAttribute(sourcePosition, i));
-    const hull = new ConvexGeometry(points);
-    geometry.dispose();
-    geometry = capOpenBoundaries(solidGeometry(hull, 0.00002));
-    hull.dispose();
-  }
-  geometry.computeBoundingBox();
-  prepGeometry.computeBoundingBox();
-  const sourceBox = geometry.boundingBox;
-  const prepBox = prepGeometry.boundingBox;
-  const sourceSize = sourceBox.getSize(new THREE.Vector3());
-  const prepSize = prepBox.getSize(new THREE.Vector3());
-  const sourceCenter = sourceBox.getCenter(new THREE.Vector3());
-  const prepCenter = prepBox.getCenter(new THREE.Vector3());
-  const sourceWidth = Math.max(sourceSize.x, sourceSize.y);
-  const targetWidth = Math.max(prepSize.x, prepSize.y) + wall * 2;
-  if (!(sourceWidth > 0) || !(targetWidth > 0)) throw new Error('Reference crown or prep bounds are invalid.');
-  const scale = targetWidth / sourceWidth;
-  geometry.applyMatrix4(new THREE.Matrix4().makeScale(scale, scale, scale));
-  const marginZ = prepBox.max.z - marginDepth;
-  geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(
-    prepCenter.x - sourceCenter.x * scale,
-    prepCenter.y - sourceCenter.y * scale,
-    marginZ - sourceBox.min.z * scale
-  ));
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  if (signedVolume(geometry) < 0) {
-    const array = geometry.index.array;
-    for (let i = 0; i < array.length; i += 3) { const swap = array[i + 1]; array[i + 1] = array[i + 2]; array[i + 2] = swap; }
-    geometry.index.needsUpdate = true;
-    geometry.computeVertexNormals();
-  }
-  return geometry;
-}
 const closureCheck = inspectClosedMesh;
-function nearestAntagonistSample(geometry) {
-  const opponent = getOpposingMesh();
-  if (!opponent) return null;
-  try {
-    opponent.updateMatrixWorld(true);
-    const toOpponentLocal = opponent.matrixWorld.clone().invert();
-    const bvh = new MeshBVH(opponent.geometry);
-    const pos = geometry.attributes.position;
-    const stride = Math.max(1, Math.floor(pos.count / 700));
-    const p = new THREE.Vector3();
-    let minDistance = Infinity;
-    for (let i = 0; i < pos.count; i += stride) {
-      p.fromBufferAttribute(pos, i).applyMatrix4(toOpponentLocal);
-      const hit = bvh.closestPointToPoint(p);
-      if (hit && hit.distance < minDistance) minDistance = hit.distance;
-    }
-    return Number.isFinite(minDistance) ? minDistance : null;
-  } catch {
-    return null;
-  }
-}
 function updateBiteSummary() {
-  const marked = $('bite-verified').checked;
-  $('bite-check-status').textContent = marked ? 'User marked checked' : 'Unverified';
-  $('bite-check-status').className = marked ? 'warn' : 'warn';
-  if (lastOcclusionGap !== null) {
-    $('qc-occlusion').textContent = lastOcclusionGap.toFixed(2) + ' mm unsigned sample · ' + (marked ? 'user note only' : 'unverified');
-    $('qc-occlusion').className = 'qc-warn';
-  }
-  refreshDesignFreshness();
+  $('bite-check-status').textContent = 'Unverified · no bite record solver';
+  $('bite-check-status').className = 'warn';
+  setQc('qc-occlusion', 'No bite registration', 'warn');
 }
 function applyOpposingTransform() {
   const opponent = getOpposingMesh();
@@ -821,15 +874,8 @@ function applyOpposingTransform() {
   opponent.position.set(Number($('opp-x').value) || 0, Number($('opp-y').value) || 0, Number($('opp-z').value) || 0);
   opponent.rotation.set(THREE.MathUtils.degToRad(Number($('opp-rx').value) || 0), THREE.MathUtils.degToRad(Number($('opp-ry').value) || 0), THREE.MathUtils.degToRad(Number($('opp-rz').value) || 0), 'XYZ');
   opponent.updateMatrixWorld(true);
-  if (designMesh && designMesh.userData.outerGeometry) {
-    setQc('qc-occlusion', 'Updating sample…', 'warn');
-    clearTimeout(alignmentTimer);
-    alignmentTimer = setTimeout(() => {
-      lastOcclusionGap = nearestAntagonistSample(designMesh.userData.outerGeometry);
-      updateBiteSummary();
-    }, 250);
-  }
   updateBiteSummary();
+  if (designMesh) refreshDesignFreshness();
 }
 async function generateProposal() {
   if (isBusy || isImporting || isSwitchingCase) return;
@@ -840,6 +886,10 @@ async function generateProposal() {
   }
   if (prep.userData.geometryType !== 'surface-mesh') {
     notify('The preparation must be a surface mesh. Point clouds are accepted for inspection and registration preparation, not Boolean generation.', 4500);
+    return;
+  }
+  if (marginTrace.sourceSha256 !== prep.userData.sha256 || !marginTrace.closed) {
+    notify('Close an operator-entered 3D margin trace on this preparation before generating the preview.', 4500);
     return;
   }
   const inputError = validateDesignBrief(false) || validateNumericInputs();
@@ -853,11 +903,10 @@ async function generateProposal() {
   isBusy = true;
   setOperationBusy(true);
   $('generate-button').disabled = true;
-  setDesignStatus('Building outer anatomy and intaglio…', '◌');
+  setDesignStatus('Building trace-driven outer envelope and intaglio preview…', '◌');
   let prepLocalGeometry = null;
   let outer = null;
   let inner = null;
-  let referenceLocalGeometry = null;
   let prepWorldMatrix = null;
   try {
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -879,33 +928,13 @@ async function generateProposal() {
     const relief = Number($('clearance').value);
     const wall = Number($('wall').value);
     const anatomy = Number($('anatomy').value);
-    const marginDepth = Number($('margin').value);
-    let sourceMode = $('design-source').value;
-    const reference = getReferenceMesh();
-    if (sourceMode === 'reference' && !reference) throw new Error('Choose a procedural fallback or load a closed reference crown first.');
-    if (sourceMode === 'reference' && reference?.userData.geometryType !== 'surface-mesh') throw new Error('The selected reference must be a surface mesh. Choose the procedural fallback for a point-cloud reference.');
-    if (sourceMode === 'reference') {
-      reference.updateMatrixWorld(true);
-      referenceLocalGeometry = reference.geometry.clone();
-      referenceLocalGeometry.applyMatrix4(reference.matrixWorld);
-      referenceLocalGeometry.applyMatrix4(prepWorldMatrix.clone().invert());
-      outer = makeReferenceOuter(referenceLocalGeometry, prepLocalGeometry, wall, marginDepth);
-      const referenceTopology = closureCheck(outer);
-      if (!referenceTopology.closed || referenceTopology.nonManifold > 0 || referenceTopology.degenerate > 0) {
-        outer.dispose();
-        outer = solidGeometry(makeCrownOuter(prepLocalGeometry, wall, anatomy, marginDepth));
-        sourceMode = 'procedural-fallback';
-        notify('The reference surface is open; using a closed procedural preview and keeping export review-only.', 5000);
-      }
-    } else {
-      outer = solidGeometry(makeCrownOuter(prepLocalGeometry, wall, anatomy, marginDepth));
-    }
+    outer = solidGeometry(makeCrownOuter(prepLocalGeometry, wall, anatomy, marginTrace.points));
     inner = offsetSolid(prepLocalGeometry, relief);
     const innerTopology = closureCheck(inner);
     if (!innerTopology.closed || innerTopology.nonManifold > 0 || innerTopology.degenerate > 0) {
       inner.dispose();
-      inner = solidGeometry(prepLocalGeometry.clone());
-      notify('The offset preparation produced an open surface; using the closed die for this review preview.', 5000);
+      inner = null;
+      throw new Error('The prep offset did not produce a closed valid solid. The intaglio fallback is blocked; adjust the prep or offset input.');
     }
     const designGeometry = await manifoldDifference(outer, inner);
     if (requestToken !== generationToken || caseData?.id !== requestCaseId || JSON.stringify(currentDesignInputs()) !== requestInputs) {
@@ -930,10 +959,11 @@ async function generateProposal() {
       designMesh.material.dispose();
       if (designMesh.userData.outerGeometry) designMesh.userData.outerGeometry.dispose();
     }
+    ensureIntaglioMapOverlay();
     const mat = materialFor(roleColors.crown, 1);
     mat.side = THREE.DoubleSide;
     designMesh = new THREE.Mesh(designGeometry, mat);
-    designMesh.name = 'procad crown proposal with intaglio';
+    designMesh.name = 'procad trace-driven crown preview with intaglio';
     designMesh.userData.role = 'crown';
     designMesh.userData.outerGeometry = outer;
     scene.add(designMesh);
@@ -944,19 +974,19 @@ async function generateProposal() {
     if (!isIsolated) {
       meshes.forEach((m) => { if (m.userData.role === 'reference') m.visible = false; });
     }
-    $('qc-fit').textContent = sourceMode === 'reference' ? 'Reference-guided Boolean · fit not measured' : sourceMode === 'procedural-fallback' ? 'Closed procedural fallback · reference surface open' : 'Procedural Boolean · fit not measured';
-    $('qc-fit').className = 'qc-warn';
+    $('qc-fit').textContent = 'Not measured';
+    $('qc-fit').className = 'qc-pending';
     $('qc-closed').textContent = meshIntegrityLabel(meshCheck, designGeometry);
     $('qc-closed').className = meshCheck.closed ? 'qc-good' : 'qc-warn';
     $('qc-wall').textContent = wall.toFixed(1) + ' mm input · unmeasured';
     $('qc-wall').className = 'qc-warn';
-    setQc('qc-occlusion', 'Registration unverified', 'warn');
-    lastOcclusionGap = nearestAntagonistSample(outer);
+    $('measure-intaglio-button').disabled = !meshCheck.closed;
+    setQc('qc-occlusion', 'No bite registration', 'warn');
     updateBiteSummary();
     const canExport = meshCheck.closed && !designIsStale();
     $('export-button').disabled = !canExport || !$('review-confirm').checked;
     $('export-button-side').disabled = !canExport || !$('review-confirm').checked;
-    setDesignStatus(meshCheck.closed ? (sourceMode === 'reference' ? 'Reference-guided preview · fit NOT EVALUATED' : sourceMode === 'procedural-fallback' ? 'Closed fallback preview · reference open' : 'Procedural preview · fit NOT EVALUATED') : 'Preview generated · mesh closure failed', '!');
+    setDesignStatus(meshCheck.closed ? 'Trace-driven parametric preview · anatomy and fit NOT VALIDATED' : 'Preview generated · mesh closure failed', '!');
     updateApprovalUI();
     fitCamera(designMesh);
     updateSceneCount();
@@ -964,13 +994,12 @@ async function generateProposal() {
     else notify('The generated mesh has open or non-manifold edges; STL export is blocked.', 4000);
   } catch (error) {
     console.error(error);
-    setDesignStatus('Geometry operation failed · adjust prep or trim level', '!');
+    setDesignStatus('Geometry operation failed · revise the trace, preparation or offset input', '!');
     notify(error.message || 'Could not create the intaglio Boolean. Check the preparation mesh.', 4500);
     setQc('qc-fit', 'Boolean failed', 'warn');
     setQc('qc-closed', 'Not checked', 'warn');
   } finally {
     prepLocalGeometry?.dispose();
-    referenceLocalGeometry?.dispose();
     inner?.dispose();
     isBusy = false;
     setOperationBusy(false);
@@ -997,26 +1026,32 @@ function serializeDesign(generatedMesh = null) {
     transform: { position: mesh.position.toArray(), rotation: mesh.rotation.toArray(), scale: mesh.scale.toArray() },
     bounds: meshBounds(mesh.geometry)
   }));
+  const intaglioSummary = intaglioMapRecord ? { ...intaglioMapRecord } : null;
+  if (intaglioSummary) {
+    delete intaglioSummary.samples;
+    if (generatedMesh) intaglioSummary.designSha256 = generatedMesh.sha256;
+  }
   return {
-    product: 'procad Dental CAD',
+    product: 'procad scan and restoration preview workbench',
     version: '0.1.0',
-    schemaVersion: 1,
+    schemaVersion: 2,
     unit: 'mm',
     caseId: caseData.id,
     caseTitle: caseData.title,
     restoration: 'single-crown-geometry-preview',
-    tooth: isLegacyTrainingCase() ? 'training label #3; not tooth-library driven' : null,
-    toothStatus: isLegacyTrainingCase() ? 'TRAINING_LABEL_ONLY' : 'UNASSIGNED',
+    tooth: currentDesignInputs().designBrief.toothId || null,
+    toothStatus: currentDesignInputs().designBrief.toothId ? 'OPERATOR_ASSIGNED' : 'UNASSIGNED',
     materialIntent: 'not-applied',
     sources,
+    marginTrace: currentDesignInputs().marginTrace,
+    intaglioDistanceMap: intaglioSummary && generatedMesh ? intaglioSummary : null,
     currentDesignInputs: currentDesignInputs(),
     generationInputs: designSnapshot,
     designStale: designIsStale(),
     internalReliefMm: Number($('clearance').value),
-    finishLineTrimDepthMm: Number($('margin').value),
     axialWallInputMm: Number($('wall').value),
     anatomy: Number($('anatomy').value),
-    opposingTransform: { translationMm: [$('opp-x').value, $('opp-y').value, $('opp-z').value].map(Number), rotationDegrees: [$('opp-rx').value, $('opp-ry').value, $('opp-rz').value].map(Number), userMarkedBiteRegistrationChecked: $('bite-verified').checked, registrationStatus: 'NOT_EVALUATED' },
+    opposingTransform: { translationMm: [$('opp-x').value, $('opp-y').value, $('opp-z').value].map(Number), rotationDegrees: [$('opp-rx').value, $('opp-ry').value, $('opp-rz').value].map(Number), registrationStatus: 'NOT_EVALUATED' },
     generated: Boolean(generatedMesh),
     generatedMesh: generatedMesh ? {
       url: generatedMesh.url,
@@ -1024,16 +1059,16 @@ function serializeDesign(generatedMesh = null) {
       bytes: generatedMesh.bytes,
       triangles: generatedMesh.triangles,
       bounds: generatedMesh.bounds,
-      geometryStatus: designIsStale() ? 'STALE_PREVIEW' : 'BOOLEAN_PREVIEW_ONLY',
+      geometryStatus: designIsStale() ? 'STALE_PREVIEW' : 'TRACE_DRIVEN_BOOLEAN_PREVIEW_ONLY',
       generatedWith: designSnapshot,
-      fitStatus: 'NOT_EVALUATED',
-      marginStatus: 'NOT_EVALUATED',
+      fitStatus: intaglioMapRecord ? 'UNVALIDATED_UNSIGNED_GEOMETRIC_DIAGNOSTIC' : 'NOT_EVALUATED',
+      marginStatus: marginTrace.closed ? 'OPERATOR_TRACE_CLOSED_UNVERIFIED' : 'NOT_CLOSED',
       wallThicknessStatus: 'NOT_EVALUATED',
       occlusionStatus: 'NOT_EVALUATED',
       materialStatus: 'NOT_EVALUATED',
       camStatus: 'NOT_EVALUATED'
     } : null,
-    warning: 'Local engineering preview only. Not clinically validated or ready for manufacturing.'
+    warning: 'Local geometry preview and operator annotations only. No clinical accuracy, fit, bite registration, contact, material, machine, nesting or toolpath validation is established.'
   };
 }
 async function saveCase(allowImport = false) {
@@ -1072,7 +1107,7 @@ async function restoreSavedCase() {
   if (response.status === 404) return false;
   if (!response.ok) throw new Error('Could not read saved case state.');
   const saved = await response.json();
-  if (saved.schemaVersion !== 1 || saved.caseId !== caseData.id) {
+  if (![1, 2].includes(saved.schemaVersion) || saved.caseId !== caseData.id) {
     notify('An older saved case was found; kept safely but not restored.');
     return false;
   }
@@ -1093,19 +1128,32 @@ async function restoreSavedCase() {
     if (Array.isArray(savedSource.transform?.scale)) mesh.scale.fromArray(savedSource.transform.scale);
     mesh.updateMatrixWorld(true);
   }
-  for (const [id, value] of [['clearance', saved.internalReliefMm], ['margin', saved.finishLineTrimDepthMm], ['wall', saved.axialWallInputMm], ['anatomy', saved.anatomy]]) {
+  const savedTrace = saved.marginTrace || saved.currentDesignInputs?.marginTrace;
+  if (savedTrace && Array.isArray(savedTrace.points) && savedTrace.sourceSha256) {
+    marginTrace = {
+      provenance: savedTrace.provenance || 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE',
+      sourceSha256: savedTrace.sourceSha256,
+      points: savedTrace.points,
+      closed: Boolean(savedTrace.closed && savedTrace.coordinateFrame === 'preparation-local-mm')
+    };
+    if (marginTrace.closed) {
+      try { sampleClosedMargin(marginTrace.points, 96); }
+      catch { marginTrace.closed = false; notify('Saved margin trace needs editing before it can drive a preview.'); }
+    }
+  }
+  renderMarginTrace();
+  refreshMarginTraceControls();
+  for (const [id, value] of [['clearance', saved.internalReliefMm], ['wall', saved.axialWallInputMm], ['anatomy', saved.anatomy]]) {
     if (Number.isFinite(value)) $(id).value = String(value);
   }
   const brief = saved.currentDesignInputs?.designBrief || {};
   for (const [id, value] of [['brief-tooth-id', brief.toothId], ['brief-dentition', brief.dentition], ['brief-arch', brief.arch], ['brief-restoration-type', brief.restorationType], ['brief-reference', brief.anatomyReference]]) {
     if (value != null && $(id)) $(id).value = String(value);
   }
-  if (saved.currentDesignInputs?.designSource && ['reference', 'procedural'].includes(saved.currentDesignInputs.designSource)) $('design-source').value = saved.currentDesignInputs.designSource;
   const translation = saved.opposingTransform?.translationMm || [0, 0, 0];
   const rotation = saved.opposingTransform?.rotationDegrees || [0, 0, 0];
   ['opp-x','opp-y','opp-z'].forEach((id, i) => { $(id).value = String(translation[i] || 0); });
   ['opp-rx','opp-ry','opp-rz'].forEach((id, i) => { $(id).value = String(rotation[i] || 0); });
-  $('bite-verified').checked = Boolean(saved.opposingTransform?.userMarkedBiteRegistrationChecked);
   applyOpposingTransform();
   updateRangeLabels();
   const generated = saved.generatedMesh;
@@ -1129,16 +1177,25 @@ async function restoreSavedCase() {
     const check = closureCheck(geometry);
     lastDesignClosed = check.closed;
     designSnapshot = generated.generatedWith || null;
-    setQc('qc-fit', 'Saved Boolean proposal · fit NOT EVALUATED', 'warn');
+    $('measure-intaglio-button').disabled = true;
+    setQc('qc-fit', 'Not measured', 'pending');
     setQc('qc-closed', meshIntegrityLabel(check, geometry), check.closed ? 'good' : 'warn');
     setQc('qc-wall', 'Unmeasured', 'warn');
-    setQc('qc-occlusion', 'Registration NOT EVALUATED', 'warn');
-    setDesignStatus(designIsStale() ? 'Restored stale proposal · regenerate before review' : 'Restored proposal · fit NOT EVALUATED', '!');
-    if (designIsStale()) setQc('qc-fit', 'Saved inputs differ · regenerate', 'warn');
+    setQc('qc-occlusion', 'No bite registration', 'warn');
+    setDesignStatus(designIsStale() ? 'Restored stale proposal · regenerate before review' : 'Restored proposal · validation not established', '!');
+    if (designIsStale()) setQc('qc-fit', 'Inputs changed · regenerate', 'warn');
     $('review-confirm').checked = false;
     $('export-button').disabled = true;
     $('export-button-side').disabled = true;
     refreshDesignFreshness();
+    if (!designIsStale() &&
+        saved.intaglioDistanceMap?.algorithm === 'area-weighted-kronecker-sequence-bvh-nearest-triangle-v1' &&
+        saved.intaglioDistanceMap?.geometryEngine === 'procad-traced-envelope-preview-v2' &&
+        saved.intaglioDistanceMap?.designSha256 === generated.sha256 &&
+        saved.intaglioDistanceMap?.sourceSha256 === getPrepMesh()?.userData.sha256) {
+      intaglioMapRecord = saved.intaglioDistanceMap;
+      showIntaglioMap(intaglioMapRecord);
+    }
     if (check.closed) notify('Saved proposal restored and checksum verified. Review is still required.');
   }
   updateMeshList();
@@ -1152,22 +1209,22 @@ async function restoreApproval() {
   if (!savedDesignHash || !caseData) return;
   const response = await fetch('/api/design/' + encodeURIComponent(caseData.id) + '/approval');
   if (response.status === 404) return;
-  if (!response.ok) throw new Error('Could not read the saved approval record.');
+  if (!response.ok) throw new Error('Could not read the saved reviewer record.');
   const value = await response.json();
   if (value.approved === true && value.designFingerprint === savedDesignHash && value.designContextFingerprint === savedDesignContextHash && !designIsStale()) approvalRecord = value;
 }
 function openApprovalDialog() {
-  if (!designMesh || !lastDesignClosed || designIsStale()) return notify('Generate and save a fresh closed proposal before requesting approval.', 4200);
+  if (!designMesh || !lastDesignClosed || designIsStale()) return notify('Generate and save a fresh closed proposal before recording a reviewer acknowledgment.', 4200);
   $('approval-dialog').showModal();
 }
 async function submitApproval() {
-  if (!designMesh || !lastDesignClosed || designIsStale()) return notify('Approval is blocked until the proposal is fresh and closed.', 4200);
-  if (!$('review-confirm').checked) return notify('Complete the professional review acknowledgement first.', 4200);
+  if (!designMesh || !lastDesignClosed || designIsStale()) return notify('Reviewer acknowledgment is blocked until the proposal is fresh and closed.', 4200);
+  if (!$('review-confirm').checked) return notify('Record the self-attested reviewer acknowledgment first.', 4200);
   const briefError = validateDesignBrief(true);
   if (briefError) return notify(briefError, 4200);
   const reviewerName = $('reviewer-name').value.trim();
   const approvalId = $('approval-id').value.trim();
-  if (!reviewerName || !approvalId) return notify('Reviewer name and approval ID are required.', 4200);
+  if (!reviewerName || !approvalId) return notify('Reviewer name and external review record ID are required.', 4200);
   if (!savedDesignHash && !(await saveCase())) return;
   savedDesignContextHash = savedDesignContextHash || await designContextHash();
   const body = {
@@ -1184,10 +1241,10 @@ async function submitApproval() {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
   });
   const result = await response.json();
-  if (!response.ok) return notify(result.error || 'Approval could not be saved.', 4500);
+  if (!response.ok) return notify(result.error || 'Reviewer acknowledgment could not be saved.', 4500);
   approvalRecord = result.approval;
   updateApprovalUI();
-  notify('Approval recorded. CAM handoff remains profile-gated.');
+  notify('Self-attested reviewer acknowledgment saved. This does not authorize manufacture.');
 }
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -1223,14 +1280,14 @@ function exporterBuffer(output) {
   throw new Error('The selected exporter returned an unsupported binary result.');
 }
 async function exportCamHandoff() {
-  if (!approvalRecord || !savedDesignHash || !designMesh || designIsStale()) return notify('CAM handoff is blocked until the current proposal has matching approval.', 4500);
+  if (!approvalRecord || !savedDesignHash || !designMesh || designIsStale()) return notify('Review handoff is blocked until the current proposal has a matching reviewer record.', 4500);
   const format = $('cam-format').value;
   const profile = $('cam-machine-profile').value;
   const camVersion = $('cam-version').value.trim();
   const material = $('cam-material').value;
   const blank = $('cam-blank').value.trim();
   const toolProfile = $('cam-tool-profile').value.trim();
-  if (!profile || !camVersion || !material || !blank || !toolProfile) return notify('Complete the CAM machine, version, material, blank, and tool profile fields.', 4500);
+  if (!profile || !camVersion || !material || !blank || !toolProfile) return notify('Complete the external machine, version, material, blank, and tool labels.', 4500);
   const artifactBuffer = format === 'obj'
     ? new TextEncoder().encode(exportObjText(designMesh)).buffer
     : exporterBuffer(new STLExporter().parse(designMesh, { binary: true }));
@@ -1248,7 +1305,7 @@ async function exportCamHandoff() {
   if (!artifactResponse.ok) return notify(artifactResult.error || 'The CAM artifact failed validation.', 4500);
   const response = await fetch('/api/design/' + encodeURIComponent(caseData.id) + '/cam-handoff', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-      format, machineProfile: profile, camVersion, material, blank, toolProfile,
+      format, machineProfile: profile, machineProfileId: profile, camVersion, material, blank, toolProfile,
       designFingerprint: savedDesignHash,
       designContextFingerprint: savedDesignContextHash || await designContextHash(),
       artifactSha256: artifactResult.sha256,
@@ -1257,7 +1314,7 @@ async function exportCamHandoff() {
     })
   });
   const result = await response.json();
-  if (!response.ok) return notify(result.error || 'CAM handoff was rejected.', 4500);
+  if (!response.ok) return notify(result.error || 'Review handoff was rejected.', 4500);
   const filename = result.manifest.geometry.fileName;
   if (format === 'obj') {
     downloadBlob(new Blob([artifactBuffer], { type: 'text/plain' }), filename);
@@ -1265,22 +1322,22 @@ async function exportCamHandoff() {
     downloadBlob(new Blob([artifactBuffer], { type: 'model/stl' }), filename);
   }
   downloadBlob(new Blob([JSON.stringify(result.manifest, null, 2)], { type: 'application/json' }), result.manifest.manifestFileName);
-  $('cam-handoff-status').textContent = 'Handoff saved locally · operator must import and simulate it in the selected CAM system.';
-  notify('CAM handoff exported with approval manifest. No machine was contacted.');
+  $('cam-handoff-status').textContent = 'Review package saved locally · no CAM strategy or toolpath is included.';
+  notify('Review package exported with a self-attested record. No machine was contacted.');
 }
 function exportReviewStl() {
   if (isBusy || isImporting || isSwitchingCase) return notify('Wait for the current case operation to finish.');
   if (!designMesh) return notify('Generate a crown proposal first.');
   if (designIsStale()) return notify('Proposal inputs changed. Regenerate and save before review export.');
   if (!closureCheck(designMesh.geometry).closed) return notify('Export blocked because mesh closure failed.');
-  if (!$('review-confirm').checked) return notify('Confirm the professional review acknowledgement to export.');
+  if (!$('review-confirm').checked) return notify('Confirm the self-attested reviewer acknowledgment to export.');
   const exporter = new STLExporter();
   const output = exporter.parse(designMesh, { binary: true });
   const blob = new Blob([output], { type: 'model/stl' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = isLegacyTrainingCase() ? 'procad_TrainingCase3_REVIEW_REQUIRED.stl' : 'procad_Unassigned_REVIEW_REQUIRED.stl';
+  link.download = 'procad_REVIEW_REQUIRED.stl';
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
   notify('Review STL downloaded. It is not a machine toolpath.');
@@ -1298,7 +1355,6 @@ function resize() {
 }
 function updateRangeLabels() {
   $('clearance-value').textContent = Number($('clearance').value).toFixed(2) + ' mm';
-  $('margin-value').textContent = Number($('margin').value).toFixed(1) + ' mm';
   $('wall-value').textContent = Number($('wall').value).toFixed(1) + ' mm';
   const a = Number($('anatomy').value);
   $('anatomy-value').textContent = a < 33 ? 'Smooth' : a > 72 ? 'Pronounced' : 'Balanced';
@@ -1327,28 +1383,6 @@ async function importFiles(files) {
   $('generate-button').disabled = true;
   $('save-case').disabled = true;
   try {
-  if (isBuiltInDemoId()) {
-    if (!(await saveCase(true))) return;
-    clearCurrentCaseScene();
-    caseData = {
-      id: 'import-' + crypto.randomUUID().replaceAll('-', '').slice(0, 24),
-      title: 'Imported scan case',
-      source: 'Local user-provided scans',
-      unit: 'mm',
-      files: []
-    };
-    $('case-title').textContent = caseData.title;
-    updateMeshList();
-    $('clearance').value = '0.06';
-    $('margin').value = '4.2';
-    $('wall').value = '1';
-    $('anatomy').value = '55';
-    ['opp-x','opp-y','opp-z','opp-rx','opp-ry','opp-rz'].forEach((id) => { $(id).value = '0'; });
-    $('bite-verified').checked = false;
-    lastOcclusionGap = null;
-    updateRangeLabels();
-    updateBiteSummary();
-  }
   for (const file of files) {
     const details = await collectImportDetails(file, meshes.some((m) => m.userData.role === 'prep') ? 'scan' : 'prep');
     if (!details) { notify('Scan import cancelled.'); continue; }
@@ -1380,10 +1414,8 @@ async function importFiles(files) {
   clearDesign();
   fitCamera();
   if (getPrepMesh()) fitCamera(getPrepMesh());
-  if (!isBuiltInDemoId()) {
-    if (await saveCase(true)) await refreshCasePicker();
-    else notify('Imported scans remain in this open case. Retry Save before switching or refreshing.', 4200);
-  }
+  if (await saveCase(true)) await refreshCasePicker();
+  else notify('Imported scans remain in this open case. Retry Save before switching or refreshing.', 4200);
   } finally {
     isImporting = false;
     setOperationBusy(false);
@@ -1395,18 +1427,11 @@ async function importFiles(files) {
   }
 }
 async function readCase(id) {
-  if (isBuiltInDemoId(id)) {
-    const response = await fetch('/api/demo');
-    if (!response.ok) throw new Error('The training case could not be read.');
-    const demo = await response.json();
-    if (!isBuiltInDemoId(demo.id)) throw new Error('The configured demo case is invalid.');
-    return demo;
-  }
   if (!/^[a-z0-9_-]{1,64}$/i.test(id)) throw new Error('The selected saved case id is invalid.');
   const response = await fetch('/api/design/' + encodeURIComponent(id));
-  if (!response.ok) throw new Error('The selected saved case could not be reopened. The training case was not substituted.');
+  if (!response.ok) throw new Error('The selected saved case could not be reopened.');
   const saved = await response.json();
-  if (saved.schemaVersion !== 1 || saved.caseId !== id || !Array.isArray(saved.sources)) throw new Error('The saved case manifest is incomplete or unsupported.');
+  if (![1, 2].includes(saved.schemaVersion) || saved.caseId !== id || !Array.isArray(saved.sources)) throw new Error('The saved case manifest is incomplete or unsupported.');
   const files = saved.sources.map((source) => {
     if (!/^\/user-meshes\/[a-z0-9_-]+\.(stl|ply|obj|off|xyz|pts|csv|pcd)$/i.test(source.url || '') || !/^[a-f0-9]{64}$/i.test(source.sha256 || '')) {
       throw new Error('A saved imported scan has an invalid path or checksum.');
@@ -1424,7 +1449,6 @@ async function activateCase(id) {
   caseData = nextCase;
   $('case-title').textContent = caseData.title;
   for (const record of caseData.files) await loadMesh(record);
-  $('design-source').value = caseData.files.some((record) => record.role === 'reference') ? 'reference' : 'procedural';
   await restoreSavedCase();
   updateMeshList();
   const prep = getPrepMesh();
@@ -1435,17 +1459,18 @@ async function activateCase(id) {
 async function refreshCasePicker() {
   const picker = $('case-picker');
   if (!picker) return;
-  const options = [{ id: caseData?.id || 'procad-public-demo', title: caseData?.title || 'procad public demo · synthetic mesh' }];
+  const options = [];
   try {
     const response = await fetch('/api/cases');
     if (response.ok) {
       const payload = await response.json();
-      for (const item of payload.cases || []) if (!isBuiltInDemoId(item.id)) options.push(item);
+      for (const item of payload.cases || []) options.push(item);
     }
-  } catch { /* The training case remains available if listing saved cases fails. */ }
+  } catch { /* The current local case remains available if listing saved cases fails. */ }
   if (caseData && !options.some((item) => item.id === caseData.id)) options.push({ id: caseData.id, title: caseData.title });
+  if (!options.length) options.push({ id: '', title: 'No saved cases' });
   picker.replaceChildren(...options.map((item) => new Option(item.title, item.id)));
-  picker.value = caseData?.id || 'procad-public-demo';
+  picker.value = caseData?.id || '';
 }
 async function switchCase(id) {
   if (!id || id === caseData?.id) return;
@@ -1490,6 +1515,7 @@ async function createNewCase() {
     $('case-title').textContent = caseData.title;
     updateMeshList();
     if (await saveCase()) {
+      localStorage.setItem(ACTIVE_CASE_STORAGE_KEY, caseData.id);
       await refreshCasePicker();
       notify('New case created. Import its preparation and supporting scans.');
     } else if (previousId) {
@@ -1509,12 +1535,16 @@ async function start() {
   try {
     const savedActiveId = localStorage.getItem(ACTIVE_CASE_STORAGE_KEY);
     let activeId = savedActiveId || localStorage.getItem(LEGACY_ACTIVE_CASE_STORAGE_KEY);
-    if (!savedActiveId && activeId) {
-      if (activeId === 'opencusp-public-demo') activeId = 'procad-public-demo';
+    if (['opencusp-public-demo', 'procad-public-demo', 'bluesky-practice-3'].includes(activeId)) {
+      activeId = null;
+      localStorage.removeItem(ACTIVE_CASE_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_ACTIVE_CASE_STORAGE_KEY);
+    } else if (!savedActiveId && activeId) {
       localStorage.setItem(ACTIVE_CASE_STORAGE_KEY, activeId);
       localStorage.removeItem(LEGACY_ACTIVE_CASE_STORAGE_KEY);
     }
-    await activateCase(activeId || 'procad-public-demo');
+    if (activeId) await activateCase(activeId);
+    else await createNewCase();
     await refreshCasePicker();
     $('loading').classList.add('hidden');
   } catch (error) {
@@ -1536,22 +1566,24 @@ function clearCurrentCaseScene() {
   isIsolated = false;
   isolationSnapshot = null;
   viewVisibilitySnapshot = null;
-  $('bite-verified').checked = false;
+  marginTraceActive = false;
+  controls.enabled = true;
+  marginTrace = { sourceSha256: null, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+  disposeGroupContents(marginTraceOverlay);
   $('clearance').value = '0.06';
-  $('margin').value = '4.2';
   $('wall').value = '1';
   $('anatomy').value = '55';
-  $('design-source').value = 'procedural';
   $('brief-tooth-id').value = '';
   $('brief-dentition').value = 'permanent';
   $('brief-arch').value = 'maxillary';
   $('brief-restoration-type').value = 'single-crown';
   $('brief-reference').value = 'procedural';
   ['opp-x','opp-y','opp-z','opp-rx','opp-ry','opp-rz'].forEach((id) => { $(id).value = '0'; });
-  lastOcclusionGap = null;
+  intaglioMapRecord = null;
   updateRangeLabels();
   updateBiteSummary();
   updateMeshList();
+  refreshMarginTraceControls();
 }
 
 function navigateTo(target) {
@@ -1578,17 +1610,19 @@ $('review-confirm').addEventListener('change', () => {
   updateApprovalUI();
 });
 $('clearance').addEventListener('input', updateRangeLabels);
-$('margin').addEventListener('input', updateRangeLabels);
 $('wall').addEventListener('input', updateRangeLabels);
 $('anatomy').addEventListener('input', updateRangeLabels);
-$('design-source').addEventListener('change', () => { if (designMesh) refreshDesignFreshness(); updateCaseInputStatus(); });
 ['opp-x','opp-y','opp-z','opp-rx','opp-ry','opp-rz'].forEach((id) => $(id).addEventListener('input', applyOpposingTransform));
 ['brief-tooth-id', 'brief-dentition', 'brief-arch', 'brief-restoration-type', 'brief-reference'].forEach((id) => {
   $(id).addEventListener('input', () => { updateCaseInputStatus(); if (designMesh) refreshDesignFreshness(); });
   $(id).addEventListener('change', () => { updateCaseInputStatus(); if (designMesh) refreshDesignFreshness(); });
 });
-$('bite-verified').addEventListener('change', updateBiteSummary);
-$('bite-reset').addEventListener('click', () => { ['opp-x','opp-y','opp-z','opp-rx','opp-ry','opp-rz'].forEach((id) => { $(id).value = '0'; }); $('bite-verified').checked = false; applyOpposingTransform(); });
+$('bite-reset').addEventListener('click', () => { ['opp-x','opp-y','opp-z','opp-rx','opp-ry','opp-rz'].forEach((id) => { $(id).value = '0'; }); applyOpposingTransform(); });
+$('margin-trace-toggle').addEventListener('click', startOrContinueMarginTrace);
+$('margin-trace-undo').addEventListener('click', undoMarginTracePoint);
+$('margin-trace-close').addEventListener('click', closeMarginTrace);
+$('margin-trace-clear').addEventListener('click', clearMarginTrace);
+$('measure-intaglio-button').addEventListener('click', () => calculateIntaglioMap().catch((error) => { console.error(error); notify('Distance map calculation failed.', 4500); }));
 $('import-button').addEventListener('click', () => $('file-input').click());
 $('file-input').addEventListener('change', (event) => {
   importFiles([...event.target.files]).catch((error) => {
@@ -1618,9 +1652,9 @@ $('isolate-button').addEventListener('click', () => {
 $('add-restoration').addEventListener('click', () => { navigateTo('design'); $('brief-tooth-id').focus(); notify('Design brief opened.'); });
 $('approval-button').addEventListener('click', openApprovalDialog);
 $('approval-dialog').addEventListener('close', () => {
-  if ($('approval-dialog').returnValue === 'approve') submitApproval().catch((error) => { console.error(error); notify('Approval could not be recorded.', 4500); });
+  if ($('approval-dialog').returnValue === 'approve') submitApproval().catch((error) => { console.error(error); notify('Reviewer acknowledgment could not be recorded.', 4500); });
 });
-$('cam-handoff-button').addEventListener('click', () => exportCamHandoff().catch((error) => { console.error(error); notify('CAM handoff could not be created.', 4500); }));
+$('cam-handoff-button').addEventListener('click', () => exportCamHandoff().catch((error) => { console.error(error); notify('Review handoff could not be created.', 4500); }));
 document.querySelectorAll('[data-nav-target]').forEach((button) => button.addEventListener('click', () => navigateTo(button.dataset.navTarget)));
 document.querySelectorAll('.view-tab').forEach((button) => button.addEventListener('click', () => {
   document.querySelectorAll('.view-tab').forEach((b) => b.classList.remove('active'));
@@ -1669,8 +1703,23 @@ renderer.domElement.addEventListener('pointermove', (event) => {
     if (hit) $('cursor-position').textContent = 'X ' + hit.point.x.toFixed(2) + '  Y ' + hit.point.y.toFixed(2) + '  Z ' + hit.point.z.toFixed(2);
   }
 });
+renderer.domElement.addEventListener('click', (event) => {
+  if (!marginTraceActive) return;
+  event.preventDefault();
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1));
+  raycaster.setFromCamera(pointer, camera);
+  const prep = getPrepMesh();
+  if (!prep || !isVisibleInScene(prep)) return notify('The preparation is hidden. Show it before continuing the trace.', 2800);
+  raycaster.params.Points.threshold = 0.12;
+  const visibleTraceTargets = meshes.filter((mesh) => ['surface-mesh', 'point-cloud'].includes(mesh.userData.geometryType) && isVisibleInScene(mesh));
+  const firstHit = raycaster.intersectObjects(visibleTraceTargets, false)[0];
+  if (firstHit?.object === prep) addMarginTracePoint(firstHit.point);
+  else notify('Click an unobscured, visible point on the preparation surface.', 2800);
+});
 window.addEventListener('resize', resize);
 setOperationBusy(true);
 updateRangeLabels();
+refreshMarginTraceControls();
 start();
 render();

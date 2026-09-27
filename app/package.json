@@ -43,12 +43,6 @@
       "package.json",
       "node_modules/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "../data/demo",
-        "to": "data/demo"
-      }
-    ],
     "win": {
       "target": [
         "portable"

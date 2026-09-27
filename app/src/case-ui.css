@@ -21,3 +21,7 @@
   padding: 6px 9px;
   font-size: 9px;
 }
+.margin-trace-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:10px 0 6px}
+.margin-trace-controls .button{min-width:0;padding:8px 9px;font-size:11px}
+.margin-trace-controls .button:disabled{opacity:.45;cursor:not-allowed}
+.trace-active{cursor:crosshair!important}
