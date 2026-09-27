@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
-import { measureDirectedUnsignedSurfaceDistance, sampleClosedMargin, traceMarginOnSurface } from '../src/dental-geometry.js';
+import ManifoldModule from 'manifold-3d/manifold';
+import { measureDesignedIntaglioNormalClearance, measureDirectedUnsignedSurfaceDistance, sampleClosedMargin, traceMarginOnSurface } from '../src/dental-geometry.js';
+import { inspectClosedMesh } from '../src/mesh-validation.js';
 
 function circlePoints(count = 16, radius = 5) {
   return Array.from({ length: count }, (_, i) => {
@@ -151,4 +154,68 @@ test('unsigned nearest distances do not reveal penetration when surfaces interse
   assert(result.allNearestDistances.minMm < 1e-5);
   source.dispose();
   target.dispose();
+});
+
+test('CAD intaglio clearance matches only the final Boolean boundary that coincides with its cutter', async () => {
+  const lib = await ManifoldModule();
+  lib.setup();
+  const makeSolid = (geometry) => {
+    const positionOnly = geometry.clone();
+    for (const key of Object.keys(positionOnly.attributes)) if (key !== 'position') positionOnly.deleteAttribute(key);
+    const welded = mergeVertices(positionOnly, 0.00002);
+    positionOnly.dispose();
+    const input = new lib.Mesh({
+      numProp: 3,
+      vertProperties: new Float32Array(welded.attributes.position.array),
+      triVerts: new Uint32Array(welded.index.array)
+    });
+    welded.dispose();
+    return lib.Manifold.ofMesh(input);
+  };
+
+  const prep = new THREE.BoxGeometry(8, 8, 4).translate(0, 0, 2);
+  const cutter = new THREE.BoxGeometry(10, 10, 6).translate(0, 0, 2);
+  const outer = makeSolid(new THREE.BoxGeometry(12, 12, 6).translate(0, 0, 3));
+  const cavity = makeSolid(cutter);
+  const shell = outer.subtract(cavity);
+  outer.delete();
+  cavity.delete();
+  assert.equal(shell.status(), 'NoError');
+  const shellData = shell.getMesh();
+  const restoration = new THREE.BufferGeometry();
+  restoration.setAttribute('position', new THREE.BufferAttribute(new Float32Array(shellData.vertProperties), 3));
+  restoration.setIndex(new THREE.BufferAttribute(new Uint32Array(shellData.triVerts), 1));
+  assert.equal(inspectClosedMesh(restoration).closed, true);
+  shell.delete();
+
+  const result = measureDesignedIntaglioNormalClearance(prep, cutter, restoration, { sampleCount: 1000 });
+  assert.equal(result.algorithm, 'area-weighted-kronecker-boolean-intaglio-ray-clearance-v2');
+  assert.equal(result.distanceSemantics, 'positive normal-ray separation to the final CAD crown boundary; not fabricated-part fit');
+  assert(result.intaglioRayCoverage > 0.74 && result.intaglioRayCoverage < 0.76);
+  assert.equal(result.intaglioClearanceMm.count, result.matchedSampleCount);
+  assert(Math.abs(result.intaglioClearanceMm.medianMm - 1) < 1e-5);
+  assert(result.samples.filter((sample) => sample.matched).every((sample) => Math.abs(sample.distanceMm - 1) < 1e-5 && sample.boundaryDeltaMm <= result.boundaryMatchToleranceMm));
+  assert(result.samples.some((sample) => !sample.matched && Math.abs(sample.point[2]) < 1e-8), 'the open basal region must remain unmatched');
+
+  const pose = new THREE.Matrix4().compose(
+    new THREE.Vector3(14, -8, 3),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2, -0.15, 0.3)),
+    new THREE.Vector3(1, 1, 1)
+  );
+  const transformed = measureDesignedIntaglioNormalClearance(prep, cutter, restoration, {
+    sampleCount: 1000, sourceMatrix: pose, cutterMatrix: pose, designMatrix: pose
+  });
+  assert(Math.abs(transformed.intaglioClearanceMm.medianMm - 1) < 1e-5);
+  assert(Math.abs(transformed.intaglioRayCoverage - result.intaglioRayCoverage) < 1e-12);
+
+  const blockingGeometry = new THREE.BoxGeometry(10, 10, 0.2).translate(0, 0, 4.6);
+  const blocked = measureDesignedIntaglioNormalClearance(prep, cutter, blockingGeometry, { sampleCount: 1000 });
+  const prepTop = blocked.samples.filter((sample) => Math.abs(sample.point[2] - 4) < 1e-8);
+  assert(prepTop.length > 0);
+  assert(prepTop.every((sample) => !sample.matched), 'a nearer crown surface must not be skipped to match a farther cutter boundary');
+
+  prep.dispose();
+  cutter.dispose();
+  restoration.dispose();
+  blockingGeometry.dispose();
 });

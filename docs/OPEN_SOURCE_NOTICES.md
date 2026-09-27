@@ -5,7 +5,7 @@ procad's application code is an original local prototype. The production bundle 
 | Package | Resolved version | Package license | Use |
 |---|---:|---|---|
 | Three.js | 0.186.0 | MIT | 3D scene, mesh loading and display |
-| three-mesh-bvh | 0.9.15 | MIT | closest-point queries for unsigned preview samples |
+| three-mesh-bvh | 0.9.15 | MIT | surface projection, closest-point, and ray queries for geometric previews |
 | manifold-3d | 3.5.3 | Apache-2.0 | solid mesh Boolean operation; includes WASM runtime |
 | Express | 5.2.1 | MIT | local HTTP service |
 | Multer | 2.4.0 | MIT | local STL/PLY upload handling |

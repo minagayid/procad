@@ -1,6 +1,6 @@
 # Review handoff gate
 
-procad produces a local STL/OBJ review package; it does not define a validated CAM profile, connect to or transmit to a milling machine, or generate a toolpath. The reviewer record is self-attested. The repo contains one public-source DWX-43W / CAM V25.1.0 / VITA SUPRINITY PC candidate record; it is metadata only and remains unvalidated.
+procad produces a local STL/OBJ review package; it does not define a validated CAM profile, connect to or transmit to a milling machine, or generate a toolpath. The reviewer record is self-attested. The repo contains one blocked DWX-43W CAM route investigation: current updater V25.1.7 was listed by DGSHAPE on 2026-05-29, while the V25.1.0 guide's `LS-14` CAM entry is not proven to map to VITA's physical `PC-14` blank or compatible DWX-43W hardware. It remains metadata only and unvalidated.
 
 ## Required sequence
 

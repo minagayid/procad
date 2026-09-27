@@ -367,6 +367,160 @@ function summarize(values) {
 }
 
 /**
+ * Measure CAD-only normal-ray separation from preparation samples to the
+ * generated crown's Boolean intaglio boundary. A sample is matched only when
+ * the first positive hit on the final crown is opposed-facing and coincides
+ * with the first same-facing hit on the exact Boolean subtraction surface.
+ * This is a CAD geometry diagnostic, not fabricated-part fit or clinical
+ * validation.
+ */
+export function measureDesignedIntaglioNormalClearance(sourceGeometry, cutterGeometry, designGeometry, {
+  sourceMatrix = new THREE.Matrix4(),
+  cutterMatrix = new THREE.Matrix4(),
+  designMatrix = new THREE.Matrix4(),
+  sampleCount = 5000,
+  sameFacingNormalDotMin = 0.35,
+  opposedNormalDotMax = -0.35,
+  boundaryMatchToleranceMm = 0.001
+} = {}) {
+  if (!Number.isInteger(sampleCount) || sampleCount < 100 || sampleCount > 50000) {
+    throw new Error('Surface sampling count must be between 100 and 50,000.');
+  }
+  if (!Number.isFinite(sameFacingNormalDotMin) || sameFacingNormalDotMin < 0 || sameFacingNormalDotMin > 1) {
+    throw new Error('The same-facing normal criterion must be between 0 and 1.');
+  }
+  if (!Number.isFinite(opposedNormalDotMax) || opposedNormalDotMax < -1 || opposedNormalDotMax > 0) {
+    throw new Error('The opposed-facing normal criterion must be between -1 and 0.');
+  }
+  if (!Number.isFinite(boundaryMatchToleranceMm) || boundaryMatchToleranceMm <= 0 || boundaryMatchToleranceMm > 0.01) {
+    throw new Error('The CAD boundary match tolerance must be greater than 0 and no more than 0.01 mm.');
+  }
+  if (!sourceGeometry?.attributes?.position || !cutterGeometry?.attributes?.position || !designGeometry?.attributes?.position) {
+    throw new Error('Preparation, Boolean subtraction surface, and generated crown must be triangle meshes.');
+  }
+  for (const matrix of [sourceMatrix, cutterMatrix, designMatrix]) {
+    if (!matrix?.elements?.every(Number.isFinite) || new THREE.Matrix3().setFromMatrix4(matrix).determinant() <= 1e-12) {
+      throw new Error('Clearance diagnostic transforms must be finite, non-reflecting millimetre transforms.');
+    }
+  }
+  const sourceTopology = inspectClosedMesh(sourceGeometry);
+  const cutterTopology = inspectClosedMesh(cutterGeometry);
+  const designTopology = inspectClosedMesh(designGeometry);
+  if (!sourceTopology.closed || !cutterTopology.closed || !designTopology.closed) {
+    throw new Error('CAD intaglio clearance requires closed, consistently wound preparation, cutter, and crown meshes.');
+  }
+
+  const source = sourceGeometry.clone();
+  const cutter = cutterGeometry.clone();
+  const design = designGeometry.clone();
+  source.applyMatrix4(sourceMatrix);
+  cutter.applyMatrix4(cutterMatrix);
+  design.applyMatrix4(designMatrix);
+  const sourceTriangles = (source.index?.count ?? source.attributes.position.count) / 3;
+  const sourceAreas = new Float64Array(sourceTriangles);
+  const areaCdf = new Float64Array(sourceTriangles);
+  const sourceTriangle = new THREE.Triangle();
+  let totalArea = 0;
+  for (let i = 0; i < sourceTriangles; i++) {
+    readTriangle(source, i, sourceTriangle);
+    const area = sourceTriangle.getArea();
+    if (!(area > 1e-12) || !Number.isFinite(area)) continue;
+    sourceAreas[i] = area;
+    totalArea += area;
+    areaCdf[i] = totalArea;
+  }
+  if (!(totalArea > 0)) {
+    source.dispose();
+    cutter.dispose();
+    design.dispose();
+    throw new Error('The preparation surface has no measurable triangle area.');
+  }
+
+  try {
+    const cutterBvh = new MeshBVH(cutter);
+    const designBvh = new MeshBVH(design);
+    const samples = [];
+    const clearances = [];
+    const sourcePoint = new THREE.Vector3();
+    const sourceNormal = new THREE.Vector3();
+    const hitNormal = new THREE.Vector3();
+    const hitTriangle = new THREE.Triangle();
+    const ray = new THREE.Ray();
+    const firstPositiveHit = (bvh, geometry, normalDotMin, normalDotMax) => {
+      const intersections = bvh.raycast(ray, THREE.DoubleSide, 1e-7);
+      intersections.sort((a, b) => a.distance - b.distance);
+      const first = intersections.find((hit) => hit.distance > 1e-7 && Number.isFinite(hit.distance));
+      if (!first) return null;
+      // Hits on a shared edge can produce several effectively coincident face
+      // records. Consider only this first-hit tie cluster; never search through
+      // a later surface to manufacture a match.
+      let selected = null;
+      for (const hit of intersections) {
+        if (!(hit.distance > 1e-7) || !Number.isFinite(hit.distance) || hit.distance - first.distance > 1e-7) break;
+        readTriangle(geometry, hit.faceIndex, hitTriangle);
+        hitTriangle.getNormal(hitNormal);
+        const normalDot = sourceNormal.dot(hitNormal);
+        const qualifies = normalDot >= normalDotMin && normalDot <= normalDotMax;
+        if (!selected || (qualifies && !selected.qualifies) || (qualifies === selected.qualifies && Math.abs(normalDot) > Math.abs(selected.normalDot))) {
+          selected = { distanceMm: hit.distance, normalDot, qualifies };
+        }
+      }
+      return selected?.qualifies ? selected : null;
+    };
+    for (let i = 0; i < sampleCount; i++) {
+      const selector = fract((i + 0.5) * 0.6180339887498949) * totalArea;
+      let lo = 0, hi = areaCdf.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (areaCdf[mid] >= selector) hi = mid;
+        else lo = mid + 1;
+      }
+      while (lo < areaCdf.length && sourceAreas[lo] === 0) lo++;
+      if (lo >= sourceTriangles) throw new Error('Area-weighted sampling could not find a valid preparation triangle.');
+      readTriangle(source, lo, sourceTriangle);
+      const u = Math.sqrt(fract((i + 1) * 0.7548776662466927));
+      const v = fract((i + 1) * 0.5698402909980532);
+      const wa = 1 - u, wb = u * (1 - v), wc = u * v;
+      sourcePoint.set(
+        sourceTriangle.a.x * wa + sourceTriangle.b.x * wb + sourceTriangle.c.x * wc,
+        sourceTriangle.a.y * wa + sourceTriangle.b.y * wb + sourceTriangle.c.y * wc,
+        sourceTriangle.a.z * wa + sourceTriangle.b.z * wb + sourceTriangle.c.z * wc
+      );
+      sourceTriangle.getNormal(sourceNormal);
+      ray.origin.copy(sourcePoint);
+      ray.direction.copy(sourceNormal);
+      const cutterHit = firstPositiveHit(cutterBvh, cutter, sameFacingNormalDotMin, 1);
+      const designHit = firstPositiveHit(designBvh, design, -1, opposedNormalDotMax);
+      const boundaryDeltaMm = cutterHit && designHit ? Math.abs(cutterHit.distanceMm - designHit.distanceMm) : null;
+      if (cutterHit && designHit && boundaryDeltaMm <= boundaryMatchToleranceMm) {
+        clearances.push(designHit.distanceMm);
+        samples.push({ point: sourcePoint.toArray(), distanceMm: designHit.distanceMm, normalDot: designHit.normalDot, boundaryDeltaMm, matched: true });
+      } else {
+        samples.push({ point: sourcePoint.toArray(), distanceMm: null, normalDot: designHit?.normalDot ?? null, boundaryDeltaMm, matched: false });
+      }
+    }
+    if (samples.length !== sampleCount) throw new Error('The clearance query did not cover every requested preparation sample.');
+    return {
+      algorithm: 'area-weighted-kronecker-boolean-intaglio-ray-clearance-v2',
+      direction: 'preparation surface along its outward normal to a matched first hit on the generated crown intaglio',
+      distanceSemantics: 'positive normal-ray separation to the final CAD crown boundary; not fabricated-part fit',
+      regionRule: `first positive Boolean-cutter hit dot >= ${sameFacingNormalDotMin}; first positive crown hit dot <= ${opposedNormalDotMax}; ray distances agree within ${boundaryMatchToleranceMm} mm`,
+      boundaryMatchToleranceMm,
+      sourceAreaMm2: totalArea,
+      sampleCount: samples.length,
+      matchedSampleCount: clearances.length,
+      intaglioRayCoverage: clearances.length / samples.length,
+      intaglioClearanceMm: summarize(clearances),
+      samples
+    };
+  } finally {
+    source.dispose();
+    cutter.dispose();
+    design.dispose();
+  }
+}
+
+/**
  * Directed, area-weighted, unsigned Euclidean surface distance. Input geometry
  * and matrices must all use millimetres; reflected transforms are rejected
  * because they invert face-normal orientation. This diagnostic has no fit

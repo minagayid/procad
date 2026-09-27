@@ -5,7 +5,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { inspectClosedMesh } from './mesh-validation.js';
-import { measureDirectedUnsignedSurfaceDistance, sampleClosedMargin, traceMarginOnSurface } from './dental-geometry.js';
+import { measureDesignedIntaglioNormalClearance, sampleClosedMargin, traceMarginOnSurface } from './dental-geometry.js';
 import ManifoldModule from 'manifold-3d/manifold';
 import manifoldWasmUrl from 'manifold-3d/manifold.wasm?url';
 import { ACCEPTED_EXTENSIONS, POINT_CLOUD_EXTENSIONS, parseMeshText } from './mesh-formats.js';
@@ -440,7 +440,7 @@ function ensureIntaglioMapOverlay() {
     intaglioMapOverlay = null;
   }
   intaglioMapRecord = null;
-  $('intaglio-map-status').textContent = 'No diagnostic. It reports unsigned nearest-surface geometry only; it has no clinical pass threshold.';
+  $('intaglio-map-status').textContent = 'No diagnostic. CAD rays are matched to the Boolean intaglio boundary only; they do not measure a fabricated crown or provide a clinical pass result.';
   setQc('qc-fit', 'Not measured', 'pending');
 }
 function showIntaglioMap(record) {
@@ -453,8 +453,8 @@ function showIntaglioMap(record) {
   if (!record) return;
   let overlayStatus = 'Saved summary only; sample overlay was not persisted.';
   if (record.samples?.length) {
-    const eligible = record.samples.filter((sample) => sample.normalDot <= -0.35);
-    overlayStatus = eligible.length ? 'Relative color scale on the opposed-normal heuristic subset.' : 'No samples met the opposed-normal heuristic; no color overlay is displayed.';
+    const eligible = record.samples.filter((sample) => sample.matched === true && Number.isFinite(sample.distanceMm));
+    overlayStatus = eligible.length ? 'Relative color scale for matched CAD intaglio rays.' : 'No preparation samples matched the Boolean intaglio boundary; no color overlay is displayed.';
     const values = eligible.map((sample) => sample.distanceMm);
     const min = values.length ? Math.min(...values) : 0;
     const max = values.length ? Math.max(...values) : 0;
@@ -473,36 +473,41 @@ function showIntaglioMap(record) {
     intaglioMapOverlay.renderOrder = 22;
     scene.add(intaglioMapOverlay);
   }
-  const subset = record.opposedNormalSubset;
-  $('intaglio-map-status').textContent = `Unsigned ${record.direction.toLowerCase()}: n=${record.sampleCount}, opposed-normal subset=${Math.round(record.opposedNormalCoverage * 100)}%, subset median ${subset.medianMm == null ? 'n/a' : subset.medianMm.toFixed(3)} mm, p05–p95 ${subset.p05Mm == null ? 'n/a' : subset.p05Mm.toFixed(3)}–${subset.p95Mm == null ? 'n/a' : subset.p95Mm.toFixed(3)} mm. ${overlayStatus} No pass/fail or clinical interpretation.`;
-  setQc('qc-fit', `Unsigned estimate · ${Math.round(record.opposedNormalCoverage * 100)}% heuristic coverage`, 'warn');
+  const clearance = record.intaglioClearanceMm;
+  const coverage = record.intaglioRayCoverage ?? 0;
+  $('intaglio-map-status').textContent = `CAD-only ${record.direction.toLowerCase()}: n=${record.sampleCount}, matched-ray coverage=${Math.round(coverage * 100)}%, median ${clearance?.medianMm == null ? 'n/a' : clearance.medianMm.toFixed(3)} mm, p05–p95 ${clearance?.p05Mm == null ? 'n/a' : clearance.p05Mm.toFixed(3)}–${clearance?.p95Mm == null ? 'n/a' : clearance.p95Mm.toFixed(3)} mm. ${overlayStatus} This measures generated CAD geometry only, not fabricated-part fit; no pass/fail or clinical interpretation.`;
+  setQc('qc-fit', `CAD clearance · ${Math.round(coverage * 100)}% ray coverage`, 'warn');
 }
 async function calculateIntaglioMap() {
   const prep = getPrepMesh();
-  if (!prep || !designMesh || !lastDesignClosed || designIsStale()) return notify('Generate a fresh closed preview before calculating a geometric distance map.', 4200);
+  if (!prep || !designMesh || !lastDesignClosed || designIsStale()) return notify('Generate a fresh closed preview before measuring CAD intaglio ray clearance.', 4200);
   if (marginTrace.sourceSha256 !== prep.userData.sha256 || !marginTrace.closed) return notify('A closed operator trace on this preparation is required.', 4200);
   $('measure-intaglio-button').disabled = true;
-  $('intaglio-map-status').textContent = 'Sampling preparation triangles and querying the generated restoration surface…';
+  $('intaglio-map-status').textContent = 'Sampling the preparation and checking first-hit agreement between the Boolean cutter and generated crown…';
+  let cutter = null;
   try {
     prep.updateMatrixWorld(true);
     designMesh.updateMatrixWorld(true);
-    const distanceMap = measureDirectedUnsignedSurfaceDistance(prep.geometry, designMesh.geometry, {
+    cutter = offsetSolid(prep.geometry, Number($('clearance').value));
+    const distanceMap = measureDesignedIntaglioNormalClearance(prep.geometry, cutter, designMesh.geometry, {
       sourceMatrix: prep.matrixWorld,
-      targetMatrix: designMesh.matrixWorld,
+      cutterMatrix: prep.matrixWorld,
+      designMatrix: designMesh.matrixWorld,
       sampleCount: 5000
     });
-    distanceMap.status = 'UNVALIDATED_UNSIGNED_GEOMETRIC_DIAGNOSTIC';
+    distanceMap.status = 'UNVALIDATED_CAD_BOOLEAN_INTAGLIO_RAY_CLEARANCE';
     distanceMap.sourceSha256 = prep.userData.sha256;
     distanceMap.geometryEngine = 'procad-traced-envelope-preview-v4';
     intaglioMapRecord = distanceMap;
     showIntaglioMap(distanceMap);
-    notify('Unsigned surface-distance diagnostic calculated. It is not a fit validation.');
+    notify('CAD intaglio ray clearance measured on matched Boolean/crown geometry. It does not measure a fabricated restoration or establish fit.');
   } catch (error) {
     console.error(error);
     $('intaglio-map-status').textContent = 'Map unavailable: ' + (error.message || 'surface-distance calculation failed.');
     setQc('qc-fit', 'Measurement failed', 'warn');
-    notify(error.message || 'Could not calculate surface distances.', 4500);
+    notify(error.message || 'Could not estimate CAD intaglio clearance.', 4500);
   } finally {
+    cutter?.dispose();
     $('measure-intaglio-button').disabled = false;
   }
 }
@@ -1067,7 +1072,7 @@ function serializeDesign(generatedMesh = null) {
       bounds: generatedMesh.bounds,
       geometryStatus: designIsStale() ? 'STALE_PREVIEW' : 'TRACE_DRIVEN_BOOLEAN_PREVIEW_ONLY',
       generatedWith: designSnapshot,
-      fitStatus: intaglioMapRecord ? 'UNVALIDATED_UNSIGNED_GEOMETRIC_DIAGNOSTIC' : 'NOT_EVALUATED',
+      fitStatus: intaglioMapRecord ? 'UNVALIDATED_CAD_BOOLEAN_INTAGLIO_RAY_CLEARANCE_NOT_FABRICATED_FIT' : 'NOT_EVALUATED',
       marginStatus: marginTrace.closed ? 'OPERATOR_TRACE_CLOSED_UNVERIFIED' : 'NOT_CLOSED',
       wallThicknessStatus: 'NOT_EVALUATED',
       occlusionStatus: 'NOT_EVALUATED',
@@ -1197,7 +1202,7 @@ async function restoreSavedCase() {
     $('export-button-side').disabled = true;
     refreshDesignFreshness();
     if (!designIsStale() &&
-        saved.intaglioDistanceMap?.algorithm === 'area-weighted-kronecker-sequence-bvh-nearest-triangle-v1' &&
+        saved.intaglioDistanceMap?.algorithm === 'area-weighted-kronecker-boolean-intaglio-ray-clearance-v2' &&
         saved.intaglioDistanceMap?.geometryEngine === 'procad-traced-envelope-preview-v4' &&
         saved.intaglioDistanceMap?.designSha256 === generated.sha256 &&
         saved.intaglioDistanceMap?.sourceSha256 === getPrepMesh()?.userData.sha256) {

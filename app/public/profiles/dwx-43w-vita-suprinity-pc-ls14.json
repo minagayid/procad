@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "dgshape-dwx-43w-dgshape-cam-v25.1.0-vita-suprinity-pc-ls14",
-  "label": "Candidate route · DWX-43W / CAM V25.1.0 / VITA SUPRINITY PC LS-14",
+  "id": "dgshape-dwx-43w-dgshape-cam-current-v25.1.7-vita-pc14-mapping-unverified",
+  "label": "Blocked candidate · DWX-43W / CAM V25.1.7 listed / VITA blank mapping unverified",
   "profileStatus": "CANDIDATE_UNVALIDATED",
   "manufacturingStatus": "BLOCKED_NO_MACHINE_VALIDATION",
-  "claims": "Public manufacturer and CAM quick-guide metadata only. This record does not include a postprocessor, machine calibration, milling strategy, or validated toolpath.",
+  "claims": "Public manufacturer and CAM quick-guide metadata only. Current CAM-to-physical-blank correspondence and DWX-43W material compatibility are not established. This record does not include a postprocessor, machine calibration, milling strategy, or validated toolpath.",
   "machine": {
     "manufacturer": "DGSHAPE",
     "model": "DWX-43W",
@@ -17,7 +17,8 @@
     "mounting": {
       "workpieceType": "pin-type block",
       "maximumConcurrentWorkpieces": 6,
-      "maximumBlockEnvelopeMm": { "width": 40, "depth": 20, "height": 20 },
+      "maximumBlockEnvelopeMm": { "x": 40, "y": 20, "z": 20, "orientationVerifiedForCandidateBlank": false },
+      "multiWorkpieceNestingGuaranteed": false,
       "pinDiameterMm": { "nominal": 5.9, "tolerancePlusMinus": 0.02 }
     },
     "unresolvedMachineData": [
@@ -29,8 +30,11 @@
   },
   "cam": {
     "product": "DGSHAPE CAM for DWX-43W",
-    "version": "2025 V25.1.0",
-    "versionEvidence": "Candidate version shown in the manufacturer-hosted 3Shape CAM Produce quick guide; not evidence of latest or installed revision. Confirm installed revision and license using the official CAM Download Center and CAM Support view.",
+    "latestListedUpdaterAsOf": "2025 V25.1.7",
+    "latestListedUpdaterDate": "2026-05-29",
+    "versionEvidence": "Official DGSHAPE updater history listed V25.1.7 on 2026-05-29. The actual installed revision, machine definition, and license are unknown; confirm them in the target CAM installation and Support view.",
+    "historicalGuideVersion": "2025 V25.1.0",
+    "historicalGuideEvidence": "The manufacturer-hosted quick guide shows a VITA SUPRINITY PC LS-14 CAM library record. That does not prove the entry is present in V25.1.7 or that it maps to the physical VITA PC-14 blank.",
     "mode": "external manufacturer CAM; procad does not generate its machine data",
     "strategy": null
   },
@@ -38,14 +42,29 @@
     "manufacturer": "VITA Zahnfabrik",
     "product": "VITA SUPRINITY PC",
     "materialClass": "glass ceramic",
-    "blank": {
-      "catalogSize": "LS-14",
-      "dimensionsMm": { "width": 18, "depth": 14.3, "height": 12.2 },
-      "form": "pin-type CAD/CAM block",
-      "lot": null
+    "camLibraryEntry": {
+      "identifier": "LS-14",
+      "publishedDimensionsMm": [18, 14.3, 12.2],
+      "dimensionAxisMapping": null,
+      "sourceGuideVersion": "2025 V25.1.0",
+      "presenceInLatestListedVersion": null,
+      "correspondingPhysicalSku": null
     },
+    "blank": {
+      "productDesignation": "PC-14",
+      "publishedDimensionsMm": [12, 14, 18],
+      "dimensionAxisMapping": null,
+      "dimensionOrderNote": "Transcribed from VITA's published physical product entry; verify actual package orientation and dimensions.",
+      "form": "VITA product-page geometry; holder mapping for DWX-43W is unresolved",
+      "lot": null,
+      "machineCompatibility": "UNVERIFIED_FOR_DWX_43W"
+    },
+    "camToPhysicalBlankMapping": "UNVERIFIED",
+    "currentManufacturerPartnerEvidence": "VITA's current SUPRINITY PC partner list names DWX-4W, not DWX-43W; seek confirmation for this machine and holder.",
     "materialInstructionsRevision": null,
-    "shrinkageOrCompensation": null
+    "shrinkageOrCompensation": null,
+    "postMillingProcessing": ["crystallization or firing per current VITA instructions", "finishing and polishing per current VITA instructions"],
+    "furnaceAndCalibration": null
   },
   "tools": [
     { "model": "ZGB-125D", "tipRadiusMm": 1.25, "tipDiameterMm": 2.5, "manufacturerGlassCeramicReplacementHours": 10, "stockerPosition": null },
@@ -70,9 +89,11 @@
     "representativeAuthorizedCases": "MISSING",
     "independentReferenceMeasurements": "MISSING",
     "materialManufacturerInstructionsAndLot": "MISSING",
+    "camLibraryToPhysicalBlankMappingAndMachineCompatibility": "MISSING",
     "exactMachineAndFixtureCalibration": "MISSING",
     "validatedCamStrategyAndPostprocessor": "MISSING",
     "collisionSimulation": "MISSING",
+    "materialFiringAndFinishingEvidence": "MISSING",
     "physicalMachiningAndIndependentInspection": "MISSING"
   },
   "sources": [
@@ -105,6 +126,36 @@
       "title": "DWX-43W milling bur catalog and geometry",
       "url": "https://dgshape.com/wp-content/uploads/2025/02/DWX-43W-Brochure-EN.pdf",
       "publisher": "DGSHAPE",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "DGSHAPE CAM updater history — V25.1.7 dated 2026-05-29",
+      "url": "https://downloadcenter.rolanddg.com/softwareparts.php?id=dadd2c5ebadf868baa36f3287b3e2363ce64a6ab&item_id=108c72d8fd63d19dc030f6f6bc0e0bde72c3c4c2&software=1f14761f400e6f7c8696a594d63e6dfa60dfd553&type=note_history_html",
+      "publisher": "Roland DG / DGSHAPE",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "DGSHAPE CAM kinematic simulation help",
+      "url": "https://downloadcenter.rolanddg.com/contents/manuals/DGSHAPE_CAM_for_DWX-43W_USE_EN/cei1731550195730.html",
+      "publisher": "Roland DG / DGSHAPE",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "VITA SUPRINITY PC physical blank and current system partner list",
+      "url": "https://www.vita-zahnfabrik.com/pdb_ccdc92_en.html_us",
+      "publisher": "VITA Zahnfabrik",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "VITA SUPRINITY PC firing parameters",
+      "url": "https://mam.vita-zahnfabrik.com/portal/ecms_mdb_download.php?id=82430&neuste_version=1&sprache=en",
+      "publisher": "VITA Zahnfabrik",
+      "accessed": "2026-09-27"
+    },
+    {
+      "title": "ISO 23298:2023 — dental milling-machine machining-accuracy test methods",
+      "url": "https://www.iso.org/standard/75167.html",
+      "publisher": "ISO",
       "accessed": "2026-09-27"
     }
   ]
