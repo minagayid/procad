@@ -5,7 +5,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { inspectClosedMesh } from './mesh-validation.js';
-import { measureDirectedUnsignedSurfaceDistance, sampleClosedMargin } from './dental-geometry.js';
+import { measureDirectedUnsignedSurfaceDistance, sampleClosedMargin, traceMarginOnSurface } from './dental-geometry.js';
 import ManifoldModule from 'manifold-3d/manifold';
 import manifoldWasmUrl from 'manifold-3d/manifold.wasm?url';
 import { ACCEPTED_EXTENSIONS, POINT_CLOUD_EXTENSIONS, parseMeshText } from './mesh-formats.js';
@@ -61,7 +61,7 @@ let savedDesignHash = null;
 let savedDesignContextHash = null;
 let isolationSnapshot = null;
 let viewVisibilitySnapshot = null;
-let marginTrace = { sourceSha256: null, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+let marginTrace = { sourceSha256: null, points: [], surfacePoints: null, closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
 let marginTraceActive = false;
 let intaglioMapRecord = null;
 let intaglioMapOverlay = null;
@@ -331,7 +331,9 @@ function renderMarginTrace() {
   if (!prep || marginTrace.points.length === 0 || marginTrace.sourceSha256 !== prep.userData.sha256) return;
   prep.updateMatrixWorld(true);
   const worldPoints = marginTrace.points.map((point) => prep.localToWorld(new THREE.Vector3(...point)));
-  const shownPoints = marginTrace.closed && worldPoints.length > 2 ? [...worldPoints, worldPoints[0].clone()] : worldPoints;
+  const linePoints = (marginTrace.closed && marginTrace.surfacePoints?.length ? marginTrace.surfacePoints : marginTrace.points)
+    .map((point) => prep.localToWorld(new THREE.Vector3(...point)));
+  const shownPoints = marginTrace.closed && linePoints.length > 2 ? [...linePoints, linePoints[0].clone()] : linePoints;
   const lineGeometry = new THREE.BufferGeometry().setFromPoints(shownPoints);
   const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: marginTrace.closed ? 0x13a892 : 0xf08a36, depthTest: true, transparent: true, opacity: 0.95 }));
   line.renderOrder = 20;
@@ -355,8 +357,8 @@ function refreshMarginTraceControls() {
       : !sameSource
         ? 'Trace source does not match the current preparation; clear it and retrace.'
         : marginTrace.closed
-          ? `Closed piecewise-linear annotation · ${marginTrace.points.length} points · source hash bound · chords are a construction proxy; clinical margin remains unverified.`
-          : `${marginTraceActive ? 'Tracing' : 'Open trace'} · ${marginTrace.points.length} points · connecting chords are a construction proxy; review the full preparation.`;
+          ? `Closed mesh-edge surface path · ${marginTrace.points.length} operator points · source hash bound · clinical margin remains unverified.`
+          : `${marginTraceActive ? 'Tracing' : 'Open trace'} · ${marginTrace.points.length} operator points · surface path is constructed when closed.`;
   renderer.domElement.classList.toggle('trace-active', marginTraceActive);
 }
 function startOrContinueMarginTrace() {
@@ -376,7 +378,7 @@ function startOrContinueMarginTrace() {
   clearDesign();
   renderMarginTrace();
   refreshMarginTraceControls();
-  notify('Click the frontmost visible preparation surface. Straight chords connect points; pause before orbiting.');
+  notify('Click the frontmost visible preparation surface. A mesh-edge surface path will connect points; pause before orbiting.');
 }
 function addMarginTracePoint(worldPoint) {
   const prep = getPrepMesh();
@@ -388,6 +390,7 @@ function addMarginTracePoint(worldPoint) {
     if (previous.distanceTo(local) < 0.08) return;
   }
   marginTrace.points.push(local.toArray());
+  marginTrace.surfacePoints = null;
   marginTrace.closed = false;
   renderMarginTrace();
   refreshMarginTraceControls();
@@ -397,8 +400,9 @@ function closeMarginTrace() {
   const prep = getPrepMesh();
   if (!prep || prep.userData.sha256 !== marginTrace.sourceSha256) return notify('The trace must belong to the currently loaded preparation.', 4000);
   try {
-    sampleClosedMargin(marginTrace.points, 96);
+    marginTrace.surfacePoints = traceMarginOnSurface(marginTrace.points, prep.geometry);
   } catch (error) {
+    marginTrace.surfacePoints = null;
     return notify(error.message, 5000);
   }
   marginTrace.closed = true;
@@ -407,11 +411,12 @@ function closeMarginTrace() {
   clearDesign();
   renderMarginTrace();
   refreshMarginTraceControls();
-  notify('Operator trace closed. The finish line is still unverified.');
+  notify('Mesh-edge path closed on the scanned surface. The clinical finish line is still unverified.');
 }
 function undoMarginTracePoint() {
   if (!marginTrace.points.length) return;
   marginTrace.points.pop();
+  marginTrace.surfacePoints = null;
   marginTrace.closed = false;
   marginTraceActive = true;
   controls.enabled = false;
@@ -422,7 +427,7 @@ function undoMarginTracePoint() {
 function clearMarginTrace() {
   marginTraceActive = false;
   controls.enabled = true;
-  marginTrace = { sourceSha256: null, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+  marginTrace = { sourceSha256: null, points: [], surfacePoints: null, closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
   disposeGroupContents(marginTraceOverlay);
   clearDesign();
   refreshMarginTraceControls();
@@ -488,7 +493,7 @@ async function calculateIntaglioMap() {
     });
     distanceMap.status = 'UNVALIDATED_UNSIGNED_GEOMETRIC_DIAGNOSTIC';
     distanceMap.sourceSha256 = prep.userData.sha256;
-    distanceMap.geometryEngine = 'procad-traced-envelope-preview-v2';
+    distanceMap.geometryEngine = 'procad-traced-envelope-preview-v4';
     intaglioMapRecord = distanceMap;
     showIntaglioMap(distanceMap);
     notify('Unsigned surface-distance diagnostic calculated. It is not a fit validation.');
@@ -505,11 +510,12 @@ function currentDesignInputs() {
   const prep = getPrepMesh();
   const opposing = getOpposingMesh();
   return {
-    geometryEngine: 'procad-traced-envelope-preview-v2',
+    geometryEngine: 'procad-traced-envelope-preview-v4',
     marginTrace: {
       provenance: marginTrace.provenance,
       sourceSha256: marginTrace.sourceSha256,
       coordinateFrame: 'preparation-local-mm',
+      surfacePathAlgorithm: marginTrace.closed ? 'mesh-edge-shortest-path-v2' : null,
       points: marginTrace.points,
       closed: marginTrace.closed
     },
@@ -770,10 +776,10 @@ async function manifoldDifference(outerGeometry, innerGeometry) {
     inner.delete();
   }
 }
-function makeCrownOuter(prepGeometry, wall, anatomy, marginPoints) {
+function makeCrownOuter(prepGeometry, wall, anatomy, marginPoints, surfacePath) {
   const box = prepGeometry.boundingBox || new THREE.Box3().setFromBufferAttribute(prepGeometry.attributes.position);
   const size = box.getSize(new THREE.Vector3());
-  const marginRing = sampleClosedMargin(marginPoints, 96).map((point) => new THREE.Vector3(...point));
+  const marginRing = sampleClosedMargin(marginPoints, 96, { surfacePolyline: surfacePath }).map((point) => new THREE.Vector3(...point));
   const center = marginRing.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / marginRing.length);
   const height = Math.max(5.7, Math.min(8.6, 6.25 + wall * 0.48));
   const rx = Math.max(...marginRing.map((point) => Math.abs(point.x - center.x)), size.x * 0.1, 0.1);
@@ -928,7 +934,7 @@ async function generateProposal() {
     const relief = Number($('clearance').value);
     const wall = Number($('wall').value);
     const anatomy = Number($('anatomy').value);
-    outer = solidGeometry(makeCrownOuter(prepLocalGeometry, wall, anatomy, marginTrace.points));
+    outer = solidGeometry(makeCrownOuter(prepLocalGeometry, wall, anatomy, marginTrace.points, marginTrace.surfacePoints));
     inner = offsetSolid(prepLocalGeometry, relief);
     const innerTopology = closureCheck(inner);
     if (!innerTopology.closed || innerTopology.nonManifold > 0 || innerTopology.degenerate > 0) {
@@ -1134,11 +1140,13 @@ async function restoreSavedCase() {
       provenance: savedTrace.provenance || 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE',
       sourceSha256: savedTrace.sourceSha256,
       points: savedTrace.points,
+      surfacePoints: null,
       closed: Boolean(savedTrace.closed && savedTrace.coordinateFrame === 'preparation-local-mm')
     };
     if (marginTrace.closed) {
-      try { sampleClosedMargin(marginTrace.points, 96); }
-      catch { marginTrace.closed = false; notify('Saved margin trace needs editing before it can drive a preview.'); }
+      try {
+        marginTrace.surfacePoints = traceMarginOnSurface(marginTrace.points, getPrepMesh()?.geometry);
+      } catch { marginTrace.closed = false; marginTrace.surfacePoints = null; notify('Saved margin annotation needs editing before it can drive a surface path.'); }
     }
   }
   renderMarginTrace();
@@ -1190,7 +1198,7 @@ async function restoreSavedCase() {
     refreshDesignFreshness();
     if (!designIsStale() &&
         saved.intaglioDistanceMap?.algorithm === 'area-weighted-kronecker-sequence-bvh-nearest-triangle-v1' &&
-        saved.intaglioDistanceMap?.geometryEngine === 'procad-traced-envelope-preview-v2' &&
+        saved.intaglioDistanceMap?.geometryEngine === 'procad-traced-envelope-preview-v4' &&
         saved.intaglioDistanceMap?.designSha256 === generated.sha256 &&
         saved.intaglioDistanceMap?.sourceSha256 === getPrepMesh()?.userData.sha256) {
       intaglioMapRecord = saved.intaglioDistanceMap;
@@ -1568,7 +1576,7 @@ function clearCurrentCaseScene() {
   viewVisibilitySnapshot = null;
   marginTraceActive = false;
   controls.enabled = true;
-  marginTrace = { sourceSha256: null, points: [], closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
+  marginTrace = { sourceSha256: null, points: [], surfacePoints: null, closed: false, provenance: 'OPERATOR_ENTERED_ON_PREPARATION_SURFACE' };
   disposeGroupContents(marginTraceOverlay);
   $('clearance').value = '0.06';
   $('wall').value = '1';

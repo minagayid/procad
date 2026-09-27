@@ -30,7 +30,7 @@
   "cam": {
     "product": "DGSHAPE CAM for DWX-43W",
     "version": "2025 V25.1.0",
-    "versionEvidence": "Version shown in the manufacturer-hosted 3Shape CAM Produce quick guide.",
+    "versionEvidence": "Candidate version shown in the manufacturer-hosted 3Shape CAM Produce quick guide; not evidence of latest or installed revision. Confirm installed revision and license using the official CAM Download Center and CAM Support view.",
     "mode": "external manufacturer CAM; procad does not generate its machine data",
     "strategy": null
   },
@@ -93,6 +93,13 @@
       "url": "https://dgshape.com/wp-content/uploads/2025/07/3Shape-CAM-Produce-Quick-Guide-ENG.pdf",
       "publisher": "DGSHAPE",
       "accessed": "2026-09-27"
+    },
+    {
+      "title": "Official DGSHAPE CAM for DWX-43W Download Center",
+      "url": "https://downloadcenter.rolanddg.com/DGSHAPE_CAM_for_DWX-43W",
+      "publisher": "Roland DG / DGSHAPE",
+      "accessed": "2026-09-27",
+      "use": "Authoritative live installer/updater and software manual location; check installed revision and license in CAM Support."
     },
     {
       "title": "DWX-43W milling bur catalog and geometry",

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const WELD_TOLERANCE_MM = 0.00008;
+export const MESH_WELD_TOLERANCE_MM = 0.00008;
 
 /** Engineering mesh checks only: this does not test anatomy, fit, or milling suitability. */
 export function inspectClosedMesh(geometry) {
@@ -25,7 +25,7 @@ export function inspectClosedMesh(geometry) {
   for (let i = 0; i < sourceIndexCount; i++) {
     const sourceIndex = sourceIndices ? sourceIndices.getX(i) : i;
     const x = source.getX(sourceIndex), y = source.getY(sourceIndex), z = source.getZ(sourceIndex);
-    const key = `${Math.round(x / WELD_TOLERANCE_MM)}:${Math.round(y / WELD_TOLERANCE_MM)}:${Math.round(z / WELD_TOLERANCE_MM)}`;
+    const key = `${Math.round(x / MESH_WELD_TOLERANCE_MM)}:${Math.round(y / MESH_WELD_TOLERANCE_MM)}:${Math.round(z / MESH_WELD_TOLERANCE_MM)}`;
     let weldedIndex = vertexByKey.get(key);
     if (weldedIndex === undefined) {
       weldedIndex = weldedPositions.length / 3;
