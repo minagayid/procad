@@ -9,12 +9,14 @@ import { PLYLoader } from './server-loaders/PLYLoader.js';
 import { MAX_TEXT_MESH_CHARACTERS, parseMeshText, validateParsedGeometry } from './src/mesh-formats.js';
 import { inspectClosedMesh } from './src/mesh-validation.js';
 import { unitToMillimeters } from './src/units.js';
+import { createEvent, reconcile, scoreRisk, transitionCase, verifyEventChain } from './src/compliance-engine.js';
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(appDir, '..');
 const dataRoot = process.env.PROCAD_DATA_ROOT || path.join(projectDir, 'data');
 const userDir = process.env.PROCAD_USER_DIR || path.join(dataRoot, 'user_meshes');
 const stateDir = process.env.PROCAD_STATE_DIR || path.join(dataRoot, 'cases');
+const complianceDir = process.env.PROCAD_COMPLIANCE_DIR || path.join(dataRoot, 'compliance');
 const distDir = process.env.PROCAD_DIST_DIR || path.join(appDir, 'dist');
 const port = Number(process.env.PORT || 4179);
 const app = express();
@@ -29,6 +31,7 @@ const allowedOrigins = new Set((process.env.PROCAD_ALLOWED_ORIGINS || defaultOri
 
 await fs.mkdir(userDir, { recursive: true });
 await fs.mkdir(stateDir, { recursive: true });
+await fs.mkdir(complianceDir, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (_req, _file, callback) => callback(null, userDir),
@@ -122,6 +125,77 @@ function validateGeometry(geometry, { requireClosed = false, unitToMm = 1 } = {}
 
 app.use('/user-meshes', express.static(userDir, { fallthrough: false, maxAge: 0 }));
 app.use(express.json({ limit: '2mb' }));
+
+function safeComplianceId(raw) {
+  const id = String(raw || '');
+  return /^[A-Za-z0-9_-]{1,96}$/.test(id) ? id : null;
+}
+async function readJsonOr(file, fallback) {
+  try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return fallback; }
+}
+async function writeCompliance(name, value) { await writeStateFile(path.join(complianceDir, name), value); }
+
+app.post('/api/events', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const transactionId = safeComplianceId(body.transaction_id);
+    if (!transactionId) return res.status(400).json({ error: 'transaction_id is required and must be a safe identifier.' });
+    const file = path.join(complianceDir, 'transaction-' + transactionId + '.json');
+    const events = await readJsonOr(file, []);
+    const event = createEvent({ ...body, transaction_id: transactionId, previous_event_hash: body.previous_event_hash || events.at(-1)?.event_hash || null });
+    events.push(event);
+    await writeCompliance('transaction-' + transactionId + '.json', events);
+    res.status(201).json(event);
+  } catch (error) { res.status(400).json({ error: error.message || 'Event rejected.' }); }
+});
+
+app.get('/api/audit/transactions/:transactionId', async (req, res) => {
+  const id = safeComplianceId(req.params.transactionId);
+  if (!id) return res.status(400).json({ error: 'Invalid transaction id.' });
+  const events = await readJsonOr(path.join(complianceDir, 'transaction-' + id + '.json'), []);
+  res.json({ transaction_id: id, events, verification: verifyEventChain(events) });
+});
+app.get('/api/audit/transactions/:transactionId/verify', async (req, res) => {
+  const id = safeComplianceId(req.params.transactionId);
+  if (!id) return res.status(400).json({ error: 'Invalid transaction id.' });
+  const events = await readJsonOr(path.join(complianceDir, 'transaction-' + id + '.json'), []);
+  res.json({ transaction_id: id, ...verifyEventChain(events) });
+});
+
+app.post('/api/reconciliation/run', async (req, res) => {
+  const body = req.body || {};
+  const result = reconcile(body);
+  const risk = scoreRisk(result.signals);
+  const id = 'REC-' + randomUUID();
+  const record = { reconciliation_id: id, created_at: new Date().toISOString(), organization_id: body.organization_id || null, result, risk, cases: result.signals.map((signal) => ({ case_id: 'CASE-' + randomUUID(), status: 'OPEN', signal_id: signal.signal_id, transaction_id: signal.transaction_id, resolution: null })) };
+  await writeCompliance('reconciliation-' + id + '.json', record);
+  const signals = await readJsonOr(path.join(complianceDir, 'signals.json'), []);
+  await writeCompliance('signals.json', signals.concat(result.signals));
+  res.status(201).json(record);
+});
+app.get('/api/reconciliation/:id', async (req, res) => {
+  const id = safeComplianceId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid reconciliation id.' });
+  const record = await readJsonOr(path.join(complianceDir, 'reconciliation-' + id + '.json'), null);
+  if (!record) return res.status(404).json({ error: 'Reconciliation run not found.' });
+  res.json(record);
+});
+app.get('/api/signals', async (_req, res) => res.json({ signals: await readJsonOr(path.join(complianceDir, 'signals.json'), []) }));
+app.post('/api/cases/:caseId/actions', async (req, res) => {
+  const caseId = safeComplianceId(req.params.caseId);
+  if (!caseId) return res.status(400).json({ error: 'Invalid case id.' });
+  const body = req.body || {};
+  const current = String(body.current_status || 'OPEN');
+  const next = String(body.next_status || '');
+  try {
+    const transition = transitionCase(current, next);
+    const file = path.join(complianceDir, 'case-' + caseId + '.json');
+    const record = await readJsonOr(file, { case_id: caseId, status: current, actions: [] });
+    record.status = next; record.actions.push({ ...transition, actor_id: body.actor_id || null, note: String(body.note || '').slice(0, 1000) });
+    await writeCompliance('case-' + caseId + '.json', record);
+    res.json(record);
+  } catch (error) { res.status(409).json({ error: error.message || 'Governance transition rejected.' }); }
+});
 app.get('/api/health', (_req, res) => res.json({
   ok: true,
   app: 'procad CAD',

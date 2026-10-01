@@ -2,6 +2,8 @@
 
 procad is a local-first engineering prototype for dental scan intake, provenance, mesh inspection, operator-entered 3D preparation tracing, and a bounded single-crown geometry preview. It is not a validated clinical CAD/CAM product or milling engine.
 
+The repository also contains the dependency-free transaction-integrity MVP described in [the governance implementation note](docs/TRANSACTION_INTEGRITY_MVP.md): canonical event hashing, deterministic reconciliation signals, explainable risk prioritization, and guarded review workflow transitions. It is an observability aid, not an autonomous tax or fraud decision-maker.
+
 The app starts with an empty, saved case. It does not ship synthetic dental examples or automatically load private practice data. Import only scan files you are authorized to use.
 
 ## Run from source

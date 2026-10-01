@@ -1,0 +1,7 @@
+[
+  {"id":"SERVICE_WITHOUT_INVOICE","source":"services","target":"invoices","condition":"target_missing","severity":"medium"},
+  {"id":"PAYMENT_WITHOUT_INVOICE","source":"payments","target":"invoices","condition":"target_missing","severity":"high"},
+  {"id":"INVOICE_PAYMENT_MISMATCH","source":"invoices","target":"payments","condition":"amount_mismatch","severity":"medium"},
+  {"id":"INVENTORY_PRODUCTION_VARIANCE","source":"inventory","target":"production","condition":"quantity_mismatch","severity":"medium"},
+  {"id":"DUPLICATE_INVOICE","source":"invoices","target":"invoices","condition":"duplicate","severity":"high"}
+]
