@@ -22,3 +22,36 @@ The local review/handoff gate fingerprints saved inputs and the exact STL/OBJ ar
 See [LIMITATIONS.md](LIMITATIONS.md) for the capability matrix and evidence gates required before clinical or manufacturing claims.
 
 See [VALIDATION_ROADMAP.md](VALIDATION_ROADMAP.md) for research findings, proposed algorithms, implementation stages, and measurable evidence gates for the remaining workflows.
+
+
+## Rust migration seam (2026-11-05)
+
+The repository now includes an additive Rust workspace:
+
+- `procad-core`: domain types, FDI/Universal crosswalk, STL/OBJ parsers, unit conversion, mesh topology checks and scan provenance.
+- `procad-api`: Axum/SQLite local-first API, one-time admin bootstrap, Argon2id password hashes, bearer sessions, role checks, dental case/odontogram endpoints, scan uploads, revision metadata and independent approval records.
+- `procad-cam`: an isolated evidence gate for a possible external CAM handoff. It does not generate toolpaths or communicate with machines.
+
+The legacy Electron/Three.js application remains the interactive client. It is not yet wired to this API or Rust geometry engine. The Rust workspace is therefore a parallel migration target, not a replacement of the existing frontend.
+
+Data flow intended for this phase:
+
+```text
+Electron / future Rust-aware client
+             |
+          HTTP API
+             |
+      auth + RBAC
+             |
+    SQLite case registry
+       /     |      \
+  odontogram scans  revisions
+             |        |
+       Rust intake  independent review
+                       |
+              CAM evidence gate
+                       |
+              manufacturer CAM only
+```
+
+The scan API persists source bytes and metadata with a checksum. STL/OBJ receive Rust mesh validation; PLY/OFF and point-cloud formats are recognized and stored but are not yet parsed by the Rust core. Storage is local by default and is not encrypted at rest by this development baseline.

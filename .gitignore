@@ -2,10 +2,13 @@
 app/node_modules/
 app/dist/
 exports/
+target/
 
-# Local runtime state, uploads, generated proposals, and scratch evidence
+# Local runtime state, databases, uploaded scans and generated proposals
 data/user_meshes/
 data/cases/
+procad-data/
+procad.sqlite*
 work/
 *.log
 

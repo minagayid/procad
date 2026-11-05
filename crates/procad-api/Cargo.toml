@@ -1,0 +1,24 @@
+[package]
+name = "procad-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+procad-core = { path = "../procad-core" }
+procad-cam = { path = "../procad-cam" }
+argon2 = "0.5"
+axum = { version = "0.8", features = ["json", "multipart"] }
+chrono.workspace = true
+hex.workspace = true
+rand = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "migrate", "macros", "chrono", "uuid"] }
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid.workspace = true
