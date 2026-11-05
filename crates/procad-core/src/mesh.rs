@@ -261,7 +261,7 @@ fn parse_binary_stl(bytes: &[u8]) -> Result<Option<Mesh>, MeshError> {
     for face_index in 0..count {
         let base = 84 + face_index * 50 + 12;
         let mut indices = [0u32; 3];
-        for corner in 0..3 {
+        for (corner, slot) in indices.iter_mut().enumerate() {
             let offset = base + corner * 12;
             let read = |start: usize| -> f64 { f32::from_le_bytes(bytes[start..start + 4].try_into().unwrap_or([0; 4])) as f64 };
             let point = Point3::new(read(offset), read(offset + 4), read(offset + 8));
@@ -270,7 +270,7 @@ fn parse_binary_stl(bytes: &[u8]) -> Result<Option<Mesh>, MeshError> {
                 let index = u32::try_from(vertices.len()).map_err(|_| MeshError::TooManyTriangles)?;
                 vertices.push(point); indices_by_vertex.insert(key, index); index
             };
-            indices[corner] = index;
+            *slot = index;
         }
         triangles.push(Triangle(indices));
     }
@@ -297,13 +297,13 @@ fn parse_ascii_stl(bytes: &[u8]) -> Result<Mesh, MeshError> {
     let mut indices_by_vertex: HashMap<[u64; 3], u32> = HashMap::new();
     for group in vertices.chunks_exact(3) {
         let mut indices = [0u32; 3];
-        for corner in 0..3 {
+        for (corner, slot) in indices.iter_mut().enumerate() {
             let key = point_key(group[corner]);
             let index = if let Some(index) = indices_by_vertex.get(&key) { *index } else {
                 let index = u32::try_from(unique.len()).map_err(|_| MeshError::TooManyTriangles)?;
                 unique.push(group[corner]); indices_by_vertex.insert(key, index); index
             };
-            indices[corner] = index;
+            *slot = index;
         }
         triangles.push(Triangle(indices));
     }
