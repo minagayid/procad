@@ -1,0 +1,60 @@
+{
+  "catalog_version": "1.0.0",
+  "application": "procad",
+  "notes": [
+    "This catalog separates public anatomical reference data from vendor-specific restorative/component libraries.",
+    "A license entry is not a statement of clinical validation or compatibility with a milling workflow.",
+    "The BodyParts3D model is downloaded on demand by scripts/import_bodyparts3d.sh and is not bundled in the source checkout.",
+    "ToothFairy2 is non-commercial research data and must not be used in commercial product workflows."
+  ],
+  "libraries": [
+    {
+      "id": "bodyparts3d-teeth-4.3-organui",
+      "type": "anatomical_reference_mesh",
+      "name": "BodyParts3D / Anatomography 4.3 adult dentition subset",
+      "version": "4.3",
+      "source_project": "https://github.com/organui/teeth-3d",
+      "source_commit": "f2cfe96f19dba7ec3982f2b06e6a34a1f6670450",
+      "asset_url": "https://raw.githubusercontent.com/organui/teeth-3d/f2cfe96f19dba7ec3982f2b06e6a34a1f6670450/public/models/teeth.glb",
+      "local_asset": "bodyparts3d-teeth-4.3/teeth.glb",
+      "bytes": 1518540,
+      "sha256": "89a1074b0806eb41c318d38c78a269134c5070be7b90cb2f93ab2de7d35ec239",
+      "license": "CC BY-SA 2.1 Japan",
+      "license_url": "https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en",
+      "credit": "BodyParts3D / Anatomography, © The Database Center for Life Science (DBCLS). Adapted by OrganUI.",
+      "modification_notice": "OrganUI selected 33 BodyParts3D meshes, triangulated polygon faces, recentered and uniformly scaled coordinates, changed axes to [x, z, -y], recomputed smooth normals, assigned illustrative colors and converted OBJ to GLB. procad redistributes the pinned model unchanged.",
+      "coverage": {
+        "structures": 33,
+        "permanent_teeth": 28,
+        "primary_teeth": 0,
+        "third_molars": 0,
+        "gums": 2,
+        "jaw_bones": 3
+      },
+      "clinical_status": "educational_reference_only_not_anatomically_reviewed_for_clinical_use",
+      "commercial_use": "subject_to_cc_by_sa_2_1_japan_attribution_and_share_alike_obligations"
+    },
+    {
+      "id": "toothfairy2-cbct-research",
+      "type": "cbct_segmentation_dataset",
+      "name": "ToothFairy2 training dataset",
+      "version": "2024_challenge_release",
+      "source_url": "https://toothfairy2.grand-challenge.org/dataset/",
+      "license": "CC BY-NC-SA 4.0",
+      "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+      "download_requires_registration": true,
+      "commercial_use": false,
+      "bundled": false,
+      "status": "metadata_only_research_source"
+    },
+    {
+      "id": "fdi-universal-odontogram",
+      "type": "domain_catalog",
+      "name": "FDI and Universal tooth numbering crosswalk",
+      "version": "1.0.0",
+      "source_code": "crates/procad-core/src/dental.rs",
+      "license": "MIT",
+      "bundled": true
+    }
+  ]
+}

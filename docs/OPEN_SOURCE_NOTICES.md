@@ -19,3 +19,14 @@ procad's application code is an original local prototype. The production bundle 
 The corresponding license files are supplied by the installed packages under `app/node_modules/<package>/LICENSE` (Vite's file is `LICENSE.md`) and are restored by `npm ci`. This inventory is a direct-dependency notice, not a full transitive-license audit. Before redistributing an installer or bundling additional datasets/libraries, generate and review a complete dependency/license inventory for that release.
 
 No scan dataset or synthetic case fixture is bundled. Earlier private engineering notes refer to third-party practice files; they are not part of this checkout, are not loaded by the application, and are not represented as procad data. Redistribution rights were not established. Review the complete dependency and data-license inventory before adding any dataset or library to a release.
+
+
+## Rust workspace and external anatomical data
+
+The Rust dependencies are declared in the Cargo workspace and retain their own upstream licenses. Generate a complete machine-readable dependency/license inventory for a release with `cargo metadata --format-version 1` and the organization's approved license-audit tooling.
+
+The optional BodyParts3D/Anatomography 4.3 adult-dentition model is separate from the MIT code license. It is pinned to an upstream OrganUI commit, downloaded by `scripts/import_bodyparts3d.sh`, and distributed under CC BY-SA 2.1 Japan. Keep the required DBCLS/OrganUI attribution, license link and modification notice with the model; review ShareAlike obligations before distributing a modified model. The GLB is not included in the source tree by default.
+
+ToothFairy2 is recorded as an external research dataset under CC BY-NC-SA 4.0. It is not bundled or downloaded by procad and must not enter commercial workflows without separate permission.
+
+No exocad source code, proprietary vendor component models, machine libraries or protected manufacturer assets are copied into this repository.
