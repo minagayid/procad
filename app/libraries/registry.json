@@ -1,0 +1,127 @@
+{
+  "schema": "cad.library-registry.v1",
+  "version": 1,
+  "application": "procad",
+  "reviewed": "2026-11-21",
+  "assets": [
+    {
+      "id": "bodyparts3d-teeth-4-3",
+      "title": "BodyParts3D adult dental anatomy",
+      "kind": "anatomy-reference",
+      "status": "educational-reference-only",
+      "sourceUrl": "https://github.com/organui/teeth-3d",
+      "revision": "f2cfe96f19dba7ec3982f2b06e6a34a1f6670450",
+      "format": "glb",
+      "license": "CC BY-SA 2.1 Japan",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en",
+      "attribution": "BodyParts3D / Anatomography, \u00a9 The Database Center for Life Science (DBCLS). Adapted by OrganUI.",
+      "modifications": "OrganUI selected 33 BodyParts3D meshes, triangulated polygon faces, recentered and uniformly scaled coordinates, changed axes to [x, z, -y], recomputed smooth normals, assigned illustrative colors and converted OBJ to GLB. procad redistributes the pinned model unchanged.",
+      "coverage": {
+        "structures": 33,
+        "permanent_teeth": 28,
+        "primary_teeth": 0,
+        "third_molars": 0,
+        "gums": 2,
+        "jaw_bones": 3
+      },
+      "structureMap": {
+        "upper-right-central-incisor": "11",
+        "upper-right-lateral-incisor": "12",
+        "upper-right-canine": "13",
+        "upper-right-first-premolar": "14",
+        "upper-right-second-premolar": "15",
+        "upper-right-first-molar": "16",
+        "upper-right-second-molar": "17",
+        "upper-left-central-incisor": "21",
+        "upper-left-lateral-incisor": "22",
+        "upper-left-canine": "23",
+        "upper-left-first-premolar": "24",
+        "upper-left-second-premolar": "25",
+        "upper-left-first-molar": "26",
+        "upper-left-second-molar": "27",
+        "lower-left-central-incisor": "31",
+        "lower-left-lateral-incisor": "32",
+        "lower-left-canine": "33",
+        "lower-left-first-premolar": "34",
+        "lower-left-second-premolar": "35",
+        "lower-left-first-molar": "36",
+        "lower-left-second-molar": "37",
+        "lower-right-central-incisor": "41",
+        "lower-right-lateral-incisor": "42",
+        "lower-right-canine": "43",
+        "lower-right-first-premolar": "44",
+        "lower-right-second-premolar": "45",
+        "lower-right-first-molar": "46",
+        "lower-right-second-molar": "47"
+      },
+      "units": {
+        "status": "display-normalized-not-mm",
+        "upstreamScale": 0.025,
+        "inverseScaleToSource": 40,
+        "physicalCalibration": "upstream-declared-mm-not-independently-measured",
+        "note": "GLB coordinates are display-normalized, not millimetres. Pinned preparation scales source by 0.025 and maps axes [x,y,z] to [x,z,-y]. Pinned original incisor OBJ header declares Bounds(mm); its hash was verified. x40 recovers upstream-declared source scale, not patient-specific calibration or independent physical measurement. No mm placement or measurement is enabled.",
+        "sourceUnits": "mm-declared-in-pinned-OBJ-header",
+        "sourceEvidence": "https://media.githubusercontent.com/media/olivercase/body_parts_3d_api/fd527e6f4daf732fd814314d9257df5877b844bc/meshes/FJ1279_BP22758_FMA55681_Right%20upper%20central%20incisor%20tooth.obj"
+      },
+      "notes": "28 permanent teeth, no primary teeth or third molars. Anatomy atlas, never a crown morphology, implant or scan-body library. Viewer does not export clinical geometry.",
+      "evidenceUrl": "https://github.com/organui/teeth-3d/blob/f2cfe96f19dba7ec3982f2b06e6a34a1f6670450/docs/MODEL_PROVENANCE.md",
+      "download": {
+        "url": "https://raw.githubusercontent.com/organui/teeth-3d/f2cfe96f19dba7ec3982f2b06e6a34a1f6670450/public/models/teeth.glb",
+        "sha256": "89a1074b0806eb41c318d38c78a269134c5070be7b90cb2f93ab2de7d35ec239",
+        "bytes": 1518540,
+        "rightsReviewed": true
+      }
+    },
+    {
+      "id": "cbgen-crown-bottom-research",
+      "title": "C.B.GEN crown-bottom research",
+      "kind": "research-software",
+      "status": "code-only-not-an-asset-library",
+      "sourceUrl": "https://github.com/ImaneChafi/C.B.GEN",
+      "revision": "205d27a8956eb2f94ec90da22b18800876e8d1fc",
+      "license": "MIT for repository code; original dental data not supplied",
+      "units": {
+        "status": "not-applicable",
+        "note": "No morphology asset is imported."
+      },
+      "coverage": [
+        "crown-bottom from prep and reviewed margin"
+      ],
+      "notes": "Inspected MIT LICENSE at pinned revision. README says original dentistry data cannot be shared for privacy. Not a reusable tooth-shape library or implemented integration."
+    },
+    {
+      "id": "toothforge-research",
+      "title": "ToothForge shape-generation research",
+      "kind": "research-software",
+      "status": "rights-unresolved-no-download",
+      "sourceUrl": "https://github.com/tiborkubik/toothForge",
+      "revision": "a973a1be1f1a080c228154648eb414e62395e6c2",
+      "license": "No LICENSE/COPYING file found in the inspected revision tree; do not copy",
+      "units": {
+        "status": "not-applicable",
+        "note": "No geometry or weights are imported."
+      },
+      "coverage": [
+        "spectral dental shape generation"
+      ],
+      "notes": "README describes a private real-crown dataset. Audit found research code, not a rights-cleared clinical tooth library. GitHub visibility is not a license."
+    },
+    {
+      "id": "toothfairy2-discovery",
+      "title": "ToothFairy2 segmentation data",
+      "kind": "anatomy-reference",
+      "status": "metadata-only-noncommercial",
+      "sourceUrl": "https://toothfairy2.grand-challenge.org/dataset/",
+      "revision": "2024-challenge-release",
+      "license": "Existing catalog records CC BY-NC-SA 4.0; registration required, not re-audited here",
+      "units": {
+        "status": "not-inspected",
+        "note": "No data downloaded."
+      },
+      "coverage": [
+        "CBCT segmentation research"
+      ],
+      "notes": "Not a crown library. Non-commercial restriction must be kept outside commercial workflows; exact accepted download terms require review."
+    }
+  ]
+}
