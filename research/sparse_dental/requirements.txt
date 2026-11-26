@@ -1,0 +1,6 @@
+numpy>=1.26,<3
+scipy>=1.11,<2
+SimpleITK>=2.3,<3
+scikit-image>=0.22,<1
+safetensors>=0.4,<1
+torch>=2.5,<3
