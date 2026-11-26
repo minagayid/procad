@@ -50,3 +50,21 @@ The job has the same `fdi`, `views`, and per-view `matrix` keys as above. For ea
 
 - The atlas is BodyParts3D / Anatomography, © The Database Center for Life Science (DBCLS), adapted by OrganUI. Its transformed OBJ meshes remain under [CC BY-SA 2.1 Japan](https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en). Keep the provenance manifest with exports. [ProCAD atlas attribution](../../app/public/dental-library/bodyparts3d-teeth-4.3/ATTRIBUTION.md)
 - ToothFairy2 is from AImageLab at the University of Modena and Reggio Emilia and Radboud University. As clarified by the dataset maintainer, its images, labels, derived projections, and research checkpoint are governed by [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Commercial use is prohibited. The older license field in some copies of `dataset.json` is erroneous. Release the model card, weights, config, and aggregate tests only. Attribute ToothFairy2 and cite all three works listed by the challenge. [ToothFairy2 challenge dataset and citations](https://toothfairy2.grand-challenge.org/dataset/)
+
+### Private Kaggle runner
+
+With the explicitly authorized small Ditto archive attached as a private
+notebook input and a GPU selected, clone this branch into a working directory.
+Install the missing dependencies while retaining Kaggle's CUDA-enabled PyTorch.
+Run the following command with the actual input path. The runner unpacks and
+prepares data in a temporary directory, then copies only the checkpoint,
+configuration, aggregate metrics and draft model card into the output.
+
+```bash
+python research/sparse_dental/kaggle_run.py \
+  --archive /kaggle/input/PRIVATE-DATASET/ToothFairy2_Dataset_v02_Samples.zip \
+  --output /kaggle/working/procad-toothfairy2-checkpoint
+```
+
+Inspect the metrics, class support and licensing metadata before posting that
+folder to Hugging Face.

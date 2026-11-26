@@ -166,6 +166,7 @@ def train(args):
                         for _, mask, idx in examples["test"]])
     manifest |= {"device": str(device), "gpu": torch.cuda.get_device_name(device)
                  if device.type == "cuda" else None, "seed": args.seed,
+                 "pytorch_version": str(torch.__version__),
                  "epochs": args.epochs, "best_epoch": best_epoch,
                  "split_counts": {key: len(value) for key, value in examples.items()},
                  "fdi_counts": {key: {str(FDI[idx]): sum(fdi == idx for _, _, fdi in value)
@@ -215,6 +216,7 @@ def infer(args):
     if (probability > 0.5).any():
         padded = np.pad(probability, 1)
         vertices, triangles, _, _ = marching_cubes(padded, level=0.5, spacing=(spacing,) * 3,
+                                                 gradient_direction="ascent",
                                                  allow_degenerate=False)
         vertices = vertices[:, ::-1] - config["field_mm"] / 2 - spacing / 2
         triangles = triangles[:, ::-1].copy()
