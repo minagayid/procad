@@ -12,26 +12,52 @@ from torch.nn import functional as F
 from safetensors.torch import load_file, save_file
 
 from atlas import surface_regions, write_obj
-from geometry import FDI, VIEW_NAMES, VIEW_SETS, backproject, surface_names, validate_views
+from geometry import FDI, VIEW_NAMES, VIEW_SETS, backproject, surface_names, validate_views, volume_grid
 
 
 class ReconstructionNet(nn.Module):
-    def __init__(self):
+    def __init__(self, size=None, field_mm=None):
         super().__init__()
+        self.spatial_prior = size is not None
         self.fdi_embedding = nn.Embedding(len(FDI), 4)
-        self.stem = nn.Sequential(nn.Conv3d(10, 12, 3, padding=1), nn.GroupNorm(3, 12), nn.SiLU())
+        inputs = 14 if self.spatial_prior else 10
+        self.stem = nn.Sequential(nn.Conv3d(inputs, 12, 3, padding=1), nn.GroupNorm(3, 12), nn.SiLU())
         self.down = nn.Sequential(nn.Conv3d(12, 24, 3, stride=2, padding=1),
                                   nn.GroupNorm(6, 24), nn.SiLU(),
                                   nn.Conv3d(24, 24, 3, padding=1), nn.SiLU())
         self.output = nn.Sequential(nn.Conv3d(36, 12, 3, padding=1), nn.SiLU(),
                                     nn.Conv3d(12, 1, 1))
+        if self.spatial_prior:
+            xyz = torch.from_numpy(volume_grid(size, field_mm)).permute(3, 0, 1, 2)
+            self.register_buffer("xyz_mm", xyz, persistent=False)
+            self.register_buffer("xyz_unit", xyz / (field_mm / 2), persistent=False)
+            # Broad ellipsoids initialize the search around the supplied
+            # tooth center. Dimensions are heuristics, not training masks.
+            width = torch.tensor([3.1 if fdi % 10 <= 3 else 4.1 if fdi % 10 <= 5 else 5.1
+                                  for fdi in FDI])
+            radii = torch.stack((width, width * 0.95, torch.full_like(width, 10.5)), dim=1)
+            self.register_buffer("radii_mm", radii, persistent=False)
+            nn.init.zeros_(self.output[-1].weight)
+            nn.init.zeros_(self.output[-1].bias)
+
+    def prior_logits(self, fdi):
+        radius = self.radii_mm[fdi, :, None, None, None]
+        distance = torch.linalg.vector_norm(self.xyz_mm[None] / radius, dim=1, keepdim=True)
+        return 5 * (1 - distance).clamp(min=-3)
 
     def forward(self, projections, fdi):
         shape = projections.shape[2:]
         identity = self.fdi_embedding(fdi)[:, :, None, None, None].expand(-1, -1, *shape)
-        full = self.stem(torch.cat((projections, identity), dim=1))
+        if self.spatial_prior:
+            prior = self.prior_logits(fdi)
+            positions = self.xyz_unit[None].expand(projections.shape[0], -1, -1, -1, -1)
+            features = (projections, identity, positions, prior / 5)
+        else:
+            prior = 0
+            features = (projections, identity)
+        full = self.stem(torch.cat(features, dim=1))
         up = F.interpolate(self.down(full), size=shape, mode="trilinear", align_corners=False)
-        return self.output(torch.cat((full, up), dim=1))
+        return self.output(torch.cat((full, up), dim=1)) + prior
 
 
 def encode(volume, slots):
@@ -124,12 +150,12 @@ def train(args):
     torch.manual_seed(args.seed)
     manifest, examples = load_prepared(args.prepared)
     args.output.mkdir(parents=True, exist_ok=False)
-    model = ReconstructionNet().to(device)
+    model = ReconstructionNet(manifest["size"], manifest["field_mm"]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     spacing = manifest["field_mm"] / manifest["size"]
     views = list(VIEW_SETS.values())
     fraction = np.mean([mask.mean() for _, mask, _ in examples["train"]])
-    positive_weight = torch.tensor(float(np.clip((1 - fraction) / fraction, 1, 24)), device=device)
+    positive_weight = torch.tensor(float(np.clip(np.sqrt((1 - fraction) / fraction), 1, 8)), device=device)
     best_score = -1
     for epoch in range(args.epochs):
         model.train()
@@ -164,15 +190,20 @@ def train(args):
         mean_masks[idx] = np.mean([mask for _, mask, fdi in examples["train"] if fdi == idx], axis=0)
     baseline = summary([metrics(mean_masks.get(idx, global_average) >= 0.5, mask, spacing)
                         for _, mask, idx in examples["test"]])
+    prior = (model.prior_logits(torch.arange(len(FDI), device=device))[:, 0] > 0).cpu().numpy()
+    prior_results = summary([metrics(prior[idx], mask, spacing)
+                             for _, mask, idx in examples["test"]])
     manifest |= {"device": str(device), "gpu": torch.cuda.get_device_name(device)
                  if device.type == "cuda" else None, "seed": args.seed,
                  "pytorch_version": str(torch.__version__),
+                 "model_version": 2,
                  "epochs": args.epochs, "best_epoch": best_epoch,
                  "split_counts": {key: len(value) for key, value in examples.items()},
                  "fdi_counts": {key: {str(FDI[idx]): sum(fdi == idx for _, _, fdi in value)
                                      for idx in sorted({entry[2] for entry in value})}
                                 for key, value in examples.items()}}
     report = {"test": results, "mean_training_mask_baseline": baseline,
+              "ellipsoid_initialization_baseline": prior_results,
               "best_validation_mean_dice": best_score}
     (args.output / "config.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (args.output / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -200,7 +231,8 @@ def infer(args):
     matrices = np.array([views[name]["matrix"] for name in selected])
     volume = backproject(normalize(images, config["field_mm"]), matrices,
                          config["size"], config["field_mm"])
-    model = ReconstructionNet().eval()
+    geometry = (config["size"], config["field_mm"]) if config.get("model_version") == 2 else ()
+    model = ReconstructionNet(*geometry).eval()
     model.load_state_dict(load_file(args.checkpoint / "model.safetensors"))
     fdi = int(job["fdi"])
     if str(fdi) not in config["fdi_counts"]["train"]:

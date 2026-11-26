@@ -172,16 +172,19 @@ def main():
                else synthetic_samples(grid, args.synthetic, args.seed))
     args.output.mkdir(parents=True, exist_ok=False)
     index = []
-    for idx, (_, split, fdi, attenuation, mask) in enumerate(samples):
+    represented_cases = {name: set() for name in ("train", "validation", "test")}
+    for idx, (case, split, fdi, attenuation, mask) in enumerate(samples):
         path = f"{idx:05d}.npz"
         images = render_views(attenuation, matrices, args.pixels, args.field_mm)
         np.savez_compressed(args.output / path, images=images, mask=mask)
         index.append({"file": path, "split": split, "fdi": fdi})
+        represented_cases[split].add(case)
     if {entry["split"] for entry in index} != {"train", "validation", "test"}:
         raise ValueError("At least one usable tooth is required in each split")
     manifest = {
         "dataset": "ToothFairy2" if args.toothfairy2 else "procedural smoke test",
         "grouping": "supplied patient groups" if args.patient_groups else "case identifiers",
+        "case_counts": {split: len(cases) for split, cases in represented_cases.items()},
         "size": args.size, "pixels": args.pixels, "field_mm": args.field_mm,
         "views": dict(zip(VIEW_NAMES, matrices.tolist(), strict=True)),
         "angles_deg": angles, "entries": index,

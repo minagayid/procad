@@ -45,6 +45,8 @@ def dataset_root(directory):
 
 def model_card(config, metrics, archive_digest):
     values = metrics["test"] | {"Mean training mask": metrics["mean_training_mask_baseline"]}
+    if "ellipsoid_initialization_baseline" in metrics:
+        values["Ellipsoid initialization"] = metrics["ellipsoid_initialization_baseline"]
     labels = {"1": "Straight only", "2": "Mesial and distal shifts",
               "3": "Both shifts plus straight"}
     rows = []
@@ -54,6 +56,11 @@ def model_card(config, metrics, archive_digest):
         rows.append(f"| {labels.get(key, key)} | {result['n_teeth']} | {result['dice']:.3f} "
                     f"| {result['iou']:.3f} | {' | '.join(distances)} | {result['empty_predictions']} |")
     table = "\n".join(rows)
+    device = f"Kaggle GPU ({config['gpu']})" if config["gpu"] else "local CPU"
+    cases = config.get("case_counts", {})
+    case_note = ("Usable crops came from "
+                 f"{cases['train']} training, {cases['validation']} validation, "
+                 f"and {cases['test']} test scans.") if cases else ""
     return f"""---
 license: cc-by-nc-sa-4.0
 tags:
@@ -72,7 +79,7 @@ no clinical or real-radiograph validation and supplies no CT attenuation map.
 
 The model was trained on {config['split_counts']['train']} tooth crops;
 validation used {config['split_counts']['validation']}. Splits used
-{config['grouping']}. The held-out results below use simulated projections
+{config['grouping']}. {case_note} The held-out results below use simulated projections
 from the small ToothFairy2 research sample. Distances exclude empty predictions.
 
 | Input | Test teeth | Dice | IoU | ASSD (mm) | HD95 (mm) | Empty |
@@ -91,7 +98,7 @@ Reggio Emilia and Radboud University. CBCT images were resampled into local
 crops and projected through a simulated cone-beam geometry. Tooth labels were
 resampled into binary targets. This repository contains only the checkpoint,
 configuration and aggregate results. The source dataset and derived
-projections are not bundled. Kaggle GPU: {config['gpu']}.
+projections are not bundled. Compute: {device}.
 Input archive SHA-256: `{archive_digest}`.
 
 [ToothFairy2 dataset](https://ditto.ing.unimore.it/toothfairy2/) ·
@@ -99,14 +106,17 @@ Input archive SHA-256: `{archive_digest}`.
 [ProCAD research code and inference instructions](https://github.com/minagayid/procad/pull/4)
 
 1. Bolelli F, Lumetti L, van Nistelrooij N, et al. Multi-structure segmentation in CBCT volumes: The ToothFairy2 challenge. Medical Image Analysis, 104095. https://doi.org/10.1016/j.media.2026.104095
-2. Bolelli F, Marchesini K, van Nistelrooij N, Pipoli V, Ficarra E, Vinayahalingam S, and Grana C. Segmenting Maxillofacial Structures in CBCT Volumes. IEEE/CVF CVPR, 2025.
+2. Bolelli F, Marchesini K, van Nistelrooij N, Lumetti L, Pipoli V, Ficarra E, Vinayahalingam S, and Grana C. Segmenting Maxillofacial Structures in CBCT Volumes. IEEE/CVF CVPR, 2025, pp. 5238–5248. https://doi.org/10.1109/CVPR52734.2025.00494
 3. Lumetti L, Pipoli V, Bolelli F, Ficarra E, and Grana C. Enhancing Patch-Based Learning for the Segmentation of the Mandibular Canal. IEEE Access, 2024. https://doi.org/10.1109/ACCESS.2024.3408629
 """
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive", required=True, type=Path)
+    data = parser.add_mutually_exclusive_group(required=True)
+    data.add_argument("--archive", type=Path)
+    data.add_argument("--dataset", type=Path)
+    parser.add_argument("--source-sha256", help="Original archive digest when the input is already extracted")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--patient-groups", type=Path)
     parser.add_argument("--epochs", type=int, default=25)
@@ -118,13 +128,21 @@ def main():
 
     if not torch.cuda.is_available():
         raise RuntimeError("Run in the private Kaggle notebook with a GPU selected")
-    with args.archive.open("rb") as package:
-        digest = hashlib.file_digest(package, "sha256").hexdigest()
+    if args.archive:
+        with args.archive.open("rb") as package:
+            digest = hashlib.file_digest(package, "sha256").hexdigest()
+        if args.source_sha256 and digest != args.source_sha256:
+            raise ValueError("Archive checksum does not match the expected source")
+    else:
+        digest = args.source_sha256 or ""
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            parser.error("--dataset requires a lowercase source archive SHA-256 digest")
     with tempfile.TemporaryDirectory(prefix="procad-private-") as work_dir:
         work = Path(work_dir)
-        extract_archive(args.archive, work)
+        if args.archive:
+            extract_archive(args.archive, work)
         prepared, checkpoint = work / "prepared", work / "checkpoint"
-        source = dataset_root(work)
+        source = dataset_root(work if args.archive else args.dataset)
         command = [sys.executable, str(HERE / "prepare.py"), "--toothfairy2", str(source),
                    "--output", str(prepared)]
         if args.patient_groups:
